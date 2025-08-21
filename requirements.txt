@@ -1,0 +1,6 @@
+mlx-lm
+mlx-data
+numpy
+mteb
+elasticsearch
+wandb
