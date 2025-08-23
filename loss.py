@@ -174,3 +174,70 @@ class NTXentLossWithAdvancedMining:
             return mx.sum(loss * w) / (mx.sum(w) + eps)
         else:
             return mx.mean(loss)
+
+
+class EmbeddingMimicLoss:
+    """
+    Loss function for training embeddings to match target embeddings.
+    Combines L1/L2 loss with cosine similarity for better training stability.
+    Based on research showing that combining distance and direction metrics is more effective.
+    """
+
+    def __init__(
+        self,
+        normalize: bool = True,
+        alpha: float = 0.6,
+        distance_type: str = "l2",
+    ):
+        self.normalize = normalize
+        self.alpha = alpha  # Weight for distance loss (L1/L2)
+        self.beta = (
+            1.0 - alpha
+        )  # Weight for cosine similarity loss (automatically 1-alpha)
+        self.distance_type = distance_type  # "l1" or "l2"
+
+    def __call__(
+        self,
+        predicted_embeddings: mx.array,
+        target_embeddings: mx.array,
+        unnormalized_loss: bool = False,
+    ) -> mx.array:
+        # Handle dimension mismatch: truncate target embeddings to match predicted
+        pred_dim = predicted_embeddings.shape[1]
+        target_dim = target_embeddings.shape[1]
+
+        if target_dim > pred_dim:
+            # Truncate target embeddings to match predicted dimension
+            target_embeddings = target_embeddings[:, :pred_dim]
+        elif target_dim < pred_dim:
+            # Pad target embeddings with zeros if needed (less common case)
+            padding = mx.zeros((target_embeddings.shape[0], pred_dim - target_dim))
+            target_embeddings = mx.concatenate([target_embeddings, padding], axis=1)
+
+        # Compute distance loss (L1 or L2)
+        if self.distance_type == "l1":
+            distance_loss = mx.mean(mx.abs(predicted_embeddings - target_embeddings))
+        else:  # l2
+            distance_loss = mx.mean(mx.square(predicted_embeddings - target_embeddings))
+
+        # Compute cosine similarity loss
+        if self.normalize:
+            pred_norm = mx.linalg.norm(predicted_embeddings, axis=1, keepdims=True)
+            target_norm = mx.linalg.norm(target_embeddings, axis=1, keepdims=True)
+            pred_normalized = predicted_embeddings / (pred_norm + 1e-8)
+            target_normalized = target_embeddings / (target_norm + 1e-8)
+        else:
+            pred_normalized = predicted_embeddings
+            target_normalized = target_embeddings
+
+        # Cosine similarity loss: 1 - cosine_similarity
+        cosine_sim = mx.sum(pred_normalized * target_normalized, axis=1)
+        cosine_loss = 1.0 - cosine_sim
+
+        # Combine losses
+        total_loss = self.alpha * distance_loss + self.beta * mx.mean(cosine_loss)
+
+        if unnormalized_loss:
+            return total_loss
+
+        return total_loss
