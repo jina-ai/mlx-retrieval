@@ -121,7 +121,7 @@ def main():
         "--save-steps", type=int, default=1000, help="Save every N steps"
     )
     parser.add_argument(
-        "--cali-version", type=str, default="v5", help="Cali dataset version"
+        "--cali-version", type=str, default="v7", help="Cali dataset version"
     )
     parser.add_argument(
         "--epochs", type=int, default=10, help="Number of training epochs"
@@ -134,10 +134,10 @@ def main():
     warmup_ratio = 0.1  # Optimal: 10% warmup (standard practice)
 
     # Optimal LoRA parameters based on SOTA models (NV-Embed, E5-Mistral, etc.)
-    lora_rank = 4  # Optimal: 16 (used by top models)
+    lora_rank = 6  # Optimal: 16 (used by top models)
     lora_alpha = 8.0  # Optimal: 2x rank for best performance
-    lora_dropout = 0.1  # Optimal: 0.0 (per Unsloth research - not useful for LoRA)
-    lora_layers = -1  # Apply to all layers
+    lora_dropout = 0.2  # Optimal: 0.0 (per Unsloth research - not useful for LoRA)
+    lora_layers = -1
     lora_keys = {
         "self_attn.q_proj",
         "self_attn.k_proj",
@@ -156,7 +156,7 @@ def main():
             lora_layers = cfg.get("num_layers", lora_layers)
             lp = cfg.get("lora_parameters", {})
             lora_rank = lp.get("rank", lora_rank)
-            lora_scale = lp.get("scale", lora_scale)
+            lora_alpha = lp.get("alpha", lora_alpha)
             lora_dropout = lp.get("dropout", lora_dropout)
             keys = lp.get("keys")
             if isinstance(keys, list) and keys:
@@ -357,6 +357,29 @@ def main():
 
     loss_and_grad_fn = nn.value_and_grad(model, compute_loss)
 
+    # Helper function to create adapter config
+    def create_adapter_config(step=None, best_score=None):
+        config = {
+            "fine_tune_type": "lora",
+            "num_layers": (
+                len(model.layers)
+                if (lora_layers is None or lora_layers < 0)
+                else lora_layers
+            ),
+            "lora_parameters": {
+                "rank": lora_rank,
+                "alpha": lora_alpha,
+                "scale": lora_alpha,
+                "dropout": lora_dropout,
+                "keys": sorted(list(lora_keys)),
+            },
+        }
+        if step is not None:
+            config["step"] = step
+        if best_score is not None:
+            config["best_ndcg_at_5"] = best_score
+        return config
+
     for epoch in range(args.epochs):
         print(f"\nStarting epoch {epoch + 1}/{args.epochs}")
         epoch_start_step = epoch * estimated_steps_per_epoch
@@ -475,30 +498,41 @@ def main():
                     for task_name, score in eval_metrics["ndcg_at_5_by_task"].items():
                         wandb.log({f"eval/ndcg@5/{task_name}": score}, step=global_step)
 
+                # Check if this is a new best score and save to best/ directory
+                best_score_file = "./adapters/best_score.txt"
+                current_best = 0.0
+                
+                if os.path.exists(best_score_file):
+                    with open(best_score_file, "r") as f:
+                        current_best = float(f.read().strip())
+                
+                if eval_metrics['avg_ndcg_at_5'] > current_best:
+                    print(f"New best NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f} (previous: {current_best:.4f})")
+                    
+                    # Save best score
+                    os.makedirs("./adapters/best", exist_ok=True)
+                    with open(best_score_file, "w") as f:
+                        f.write(f"{eval_metrics['avg_ndcg_at_5']}")
+                    
+                    # Save best model
+                    best_dir = "./adapters/best"
+                    model.save_weights(os.path.join(best_dir, "adapters.safetensors"))
+                    
+                    # Save best model config
+                    with open(os.path.join(best_dir, "adapter_config.json"), "w") as f:
+                        json.dump(create_adapter_config(step=global_step, best_score=eval_metrics['avg_ndcg_at_5']), f, indent=2)
+
             if global_step % args.save_steps == 0:
                 output_dir = (
-                    args.adapters if args.adapters else f"./adapters/step_{global_step}"
+                    args.adapters if args.adapters else f"./adapters"
                 )
+                output_dir = os.path.join(output_dir, f"step_{global_step}")
                 os.makedirs(output_dir, exist_ok=True)
                 model.save_weights(os.path.join(output_dir, "adapters.safetensors"))
 
-                adapter_config = {
-                    "fine_tune_type": "lora",
-                    "num_layers": (
-                        len(model.layers)
-                        if (lora_layers is None or lora_layers < 0)
-                        else lora_layers
-                    ),
-                    "lora_parameters": {
-                        "rank": lora_rank,
-                        "alpha": lora_alpha,
-                        "dropout": lora_dropout,
-                        "keys": sorted(list(lora_keys)),
-                    },
-                }
-
+                # Save regular checkpoint config
                 with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
-                    json.dump(adapter_config, f, indent=2)
+                    json.dump(create_adapter_config(step=global_step), f, indent=2)
 
         print(f"Epoch {epoch + 1} completed after {step} steps")
 

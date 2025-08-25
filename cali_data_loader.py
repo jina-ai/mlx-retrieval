@@ -9,12 +9,20 @@ import random
 _CACHE = {}
 
 
-def load_cali_data(version="v5"):
+def load_cali_data(version="v6"):
     """Load embeddings and tokenized data with caching"""
     if version in _CACHE:
         return _CACHE[version]
 
-    if version == "v5":
+    if version == "v6":
+        query_embeddings = np.load("data/cal_v6_q.npz")['embeddings'][:,:640]
+        doc_embeddings = np.load("data/cal_v6_d.npz")['embeddings'][:,:640]
+        tokenized_file = "data/v6_tokenize.txt"
+    elif version == "v7":
+        query_embeddings = np.load("data/cal_v7_q.npz")['embeddings'][:,:640]
+        doc_embeddings = np.load("data/cal_v7_d.npz")['embeddings'][:,:640]
+        tokenized_file = "data/v7_tokenize.txt"
+    elif version == "v5":
         query_embeddings = np.load("data/cal_v5_q.npy")
         doc_embeddings = np.load("data/cal_v5_d.npy")
         tokenized_file = "cal_v5_tokenize.txt"
@@ -75,7 +83,7 @@ def sample_generator(tokenized_arrays, query_embeddings, doc_embeddings):
         yield create_sample(idx, tokenized_arrays, query_embeddings, doc_embeddings)
 
 
-def get_cali_stream(version="v5", batch_size=4):
+def get_cali_stream(version="v6", batch_size=4):
     """Create MLX Data stream with shuffling and dynamic batching"""
     query_embeddings, doc_embeddings, tokenized_arrays = load_cali_data(version)
 
