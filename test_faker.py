@@ -1,49 +1,57 @@
 #!/usr/bin/env python3
 
-import mlx.data as dx
-import numpy as np
-import random
-from sentence_transformers import SentenceTransformer
 from faker import Faker
 
-model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B")
-fake = Faker(["zh_CN", "en_US"])
-Faker.seed(4321)
+fake = Faker(
+    [
+        "zh_CN",
+        "en_US",
+        "zh_TW",
+        "ja_JP",
+        "ko_KR",
+        "ru_RU",
+        "ar_SA",
+        "de_DE",
+        "es_ES",
+        "fr_FR",
+        "it_IT",
+        "pt_BR",
+        "tr_TR",
+        "vi_VN",
+        "ar_AE",
+    ]
+)
+fake.seed_instance(4321)
 
+all_data = set()
+for _ in range(5000):
+    data = [
+        fake.address(),
+        fake.name(),
+        fake.phone_number(),
+        fake.email(),
+        fake.city(),
+        fake.building_number(),
+        fake.street_name(),
+        fake.street_address(),
+        fake.secondary_address(),
+        fake.postcode(),
+        fake.state(),
+        fake.country(),
+        fake.job(),
+        fake.company(),
+        fake.sentence(nb_words=10),
+        fake.sentence(nb_words=20),
+        fake.sentence(nb_words=40),
+        fake.sentence(nb_words=60),
+        fake.sentence(nb_words=120),
+        fake.sentence(nb_words=256),
+        fake.sentence(nb_words=512),
+    ]
+    for item in data:
+        if item and item.strip():
+            all_data.add(item.strip())
 
-def create_sample(line_idx, tokenized_arrays, query_embeddings, doc_embeddings):
-    """Create a single sample with random role assignment"""
-    is_query = random.choice([True, False])
-
-    # exclude bos and eos
-    attention_mask = [0] + [1] * (len(tokenized_arrays[line_idx]["query"]) - 2) + [0]
-    if is_query:
-        return {
-            "tokenized": tokenized_arrays[line_idx]["query"],
-            "embedding": query_embeddings[line_idx].astype(np.float16),
-            "idx": np.array(line_idx, dtype=np.int32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-        }
-    else:
-        return {
-            "tokenized": tokenized_arrays[line_idx]["doc"],
-            "embedding": doc_embeddings[line_idx].astype(np.float16),
-            "idx": np.array(line_idx, dtype=np.int32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-        }
-
-
-def sample_generator(tokenizer, num_samples):
-    """Generate samples with random role assignment"""
-    for _ in range(num_samples):
-        yield fake.sentence(nb_words=100)
-
-
-def get_cali_stream(tokenizer, num_samples=10000, batch_size=4):
-    """Create MLX Data stream with shuffling and dynamic batching"""
-
-    stream = dx.stream_python_iterable(
-        lambda: sample_generator(tokenizer, num_samples)
-    )
-    stream = stream.dynamic_batch(batch_size, "tokenized")
-    return stream
+with open("data/v8.txt", "w") as f:
+    for line in sorted(all_data):
+        f.write(line + "\n")
