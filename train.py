@@ -534,7 +534,8 @@ def main():
 
                     # Save best model
                     best_dir = "./adapters/best"
-                    model.save_weights(os.path.join(best_dir, "adapters.safetensors"))
+                    adapter_weights = dict(tree_flatten(model.trainable_parameters()))
+                    mx.save_safetensors(best_dir, adapter_weights)
                     print(f"Saved best model to {best_dir}")
 
                     # Save best model config
@@ -552,7 +553,8 @@ def main():
                 output_dir = args.adapters if args.adapters else f"./adapters"
                 output_dir = os.path.join(output_dir, f"step_{global_step}")
                 os.makedirs(output_dir, exist_ok=True)
-                model.save_weights(os.path.join(output_dir, "adapters.safetensors"))
+                adapter_weights = dict(tree_flatten(model.trainable_parameters()))
+                mx.save_safetensors(str(output_dir), adapter_weights)
 
                 # Save regular checkpoint config
                 with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
@@ -586,7 +588,8 @@ def main():
 
     final_output_dir = args.adapters if args.adapters else "./adapters/final"
     os.makedirs(final_output_dir, exist_ok=True)
-    model.save_weights(os.path.join(final_output_dir, "adapters.safetensors"))
+    adapter_weights = dict(tree_flatten(model.trainable_parameters()))
+    mx.save_safetensors(final_output_dir, adapter_weights)
 
     adapter_config = {
         "fine_tune_type": "lora",
