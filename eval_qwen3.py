@@ -9,14 +9,8 @@ import mteb
 from mteb.models.wrapper import Wrapper
 from mteb.encoder_interface import PromptType
 
-from mteb.model_meta import ModelMeta
-import numpy as np
-from embed import encode_texts
-from mlx_lm import load
-import argparse
-from functools import partial
-import subprocess
 
+import numpy as np
 
 tasks = mteb.get_tasks(tasks=["NanoMSMARCORetrieval"])
 model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B")
@@ -43,6 +37,9 @@ class MLXWrapper(Wrapper):
     ) -> np.ndarray:
         print(f"Encoding {task_name} with prompt type {prompt_type.value}")
         embeddings = model.encode(sentences, prompt_name=prompt_type.value)
-        return embeddings[:,:640]
+        embeddings = embeddings[:, :640]
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
+        return embeddings
+
 
 evaluation.run(MLXWrapper(), overwrite_results=True)

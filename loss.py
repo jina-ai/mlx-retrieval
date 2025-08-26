@@ -200,7 +200,6 @@ class EmbeddingMimicLoss:
         self,
         predicted_embeddings: mx.array,
         target_embeddings: mx.array,
-        unnormalized_loss: bool = False,
     ) -> mx.array:
         # Handle dimension mismatch: truncate target embeddings to match predicted
         pred_dim = predicted_embeddings.shape[1]
@@ -236,8 +235,5 @@ class EmbeddingMimicLoss:
 
         # Combine losses
         total_loss = self.alpha * distance_loss + self.beta * mx.mean(cosine_loss)
-
-        if unnormalized_loss:
-            return total_loss
 
         return total_loss

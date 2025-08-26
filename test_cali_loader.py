@@ -1,5 +1,9 @@
-from cali_data_loader import get_cali_stream
+from cali_data_loader_eos import get_cali_stream
 
 stream = get_cali_stream("v7", batch_size=4)
+
+print(stream)
 for i, batch in enumerate(stream):
-    print(i)
+    print(batch)
+    if i > 2:
+        break

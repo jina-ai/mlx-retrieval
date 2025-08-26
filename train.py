@@ -3,7 +3,6 @@ import argparse
 import json
 import os
 import time
-import traceback
 from datetime import datetime
 
 import mlx.core as mx
@@ -19,8 +18,8 @@ try:
 except Exception:
     wandb = None
 
-from embed import extract_embeddings
-from cali_data_loader import get_cali_stream
+from embed import extract_eos_embeddings
+from cali_data_loader_eos import get_cali_stream
 from eval_mteb import evaluate_mteb_tasks
 from loss import (
     EmbeddingMimicLoss,
@@ -99,7 +98,7 @@ def main():
     parser.add_argument("--model", type=str, default="gemma-3-270m-mlx")
     parser.add_argument("--adapters", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="mlx-embedding")
+    parser.add_argument("--wandb-project", type=str, default="mlx-eos-embed-v4")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--tags", nargs="*", default=[])
@@ -118,7 +117,7 @@ def main():
         help="Skip initial evaluation at step 0",
     )
     parser.add_argument(
-        "--save-steps", type=int, default=1000, help="Save every N steps"
+        "--save-steps", type=int, default=None, help="Save every N steps"
     )
     parser.add_argument(
         "--cali-version", type=str, default="v7", help="Cali dataset version"
@@ -174,6 +173,26 @@ def main():
             lora_keys=lora_keys,
         )
 
+    model.set_dtype(mx.float32)
+    # Ensure model is in training mode for dropout to be active
+    model.train()
+    # remove lm_head if it exists
+    if "lm_head" in model.parameters():
+        del model.lm_head
+
+    # Print all model layers float types
+    print("Model layers float types:")
+    from mlx.utils import tree_flatten
+
+    # Use tree_flatten to recursively access all parameters
+    flattened_params = tree_flatten(model.parameters())
+    for name, param in flattened_params:
+        if hasattr(param, "dtype"):
+            print(f"  {name}: {param.dtype}")
+        else:
+            print(f"  {name}: {type(param)}")
+    print()
+
     # Use embedding mimic loss for training embeddings to match targets
     # Research shows combining L1/L2 with cosine similarity is more effective than cosine alone
     loss_fn = EmbeddingMimicLoss(
@@ -190,14 +209,9 @@ def main():
 
     # Calculate total steps based on epochs and dataset size
     # Get dataset size for epoch calculation (for logging purposes only)
-    sample_stream = get_cali_stream(version=args.cali_version, batch_size=1)
-    dataset_size = 0
-    try:
-        while True:
-            next(sample_stream)
-            dataset_size += 1
-    except StopIteration:
-        pass
+    # open "data/v7_tokenize.txt" and count the number of lines
+    with open(f"data/{args.cali_version}_tokenize.txt", "r") as f:
+        dataset_size = len(f.readlines())
 
     print(f"Dataset size: {dataset_size} samples")
     print(f"Batch size: {args.batch_size}")
@@ -223,81 +237,6 @@ def main():
         v.size for _, v in tree_flatten(model.trainable_parameters())
     )
 
-    wb_run = None
-    if args.wandb and wandb is not None:
-        run_name = (
-            args.run_name or f"train-es-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        )
-        wb_run = wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=run_name,
-            tags=args.tags,
-            config={
-                "epochs": args.epochs,
-                "total_steps": total_steps,
-                "steps_per_epoch": estimated_steps_per_epoch,
-                "dataset_size": dataset_size,
-                "batch_size": args.batch_size,
-                "max_length": args.max_length,
-                "learning_rate": learning_rate,
-                "weight_decay": weight_decay,
-                "loss": "embedding_mimic",
-                "cali_version": args.cali_version,
-                "lora_rank": lora_rank,
-                "lora_alpha": lora_alpha,
-                "lora_dropout": lora_dropout,
-                "lora_layers": lora_layers,
-                "lora_keys": sorted(lora_keys),
-                "total_params": int(total_params),
-                "trainable_params": int(trainable_params),
-                "max_grad_norm": max_grad_norm,
-                "warmup_steps": warmup_steps,
-                "warmup_ratio": warmup_ratio,
-                "evaluation": (
-                    "MTEB evaluation enabled"
-                    if args.eval_tasks
-                    else "MTEB evaluation disabled"
-                ),
-                "eval_steps": args.eval_steps,
-                "eval_tasks": args.eval_tasks if args.eval_tasks else None,
-            },
-        )
-
-    # Create MLX Data stream that outputs training-ready batches directly
-    es_stream = get_cali_stream(
-        version=args.cali_version,
-        batch_size=args.batch_size,
-    )
-
-    # Optional initial evaluation at step 0 (before training)
-    start_metrics = None
-    if args.eval_tasks and not args.skip_eval_init:
-        print("Starting MTEB evaluation...")
-        start_metrics = evaluate_mteb_tasks(
-            adapter_path=0,  # for step 0
-            max_length=args.max_length,
-            verbose=True,
-            model=model,  # Pass already-loaded model
-            tokenizer=tokenizer,  # Pass already-loaded tokenizer
-            tasks=args.eval_tasks,
-        )
-
-        print(f"Initial MTEB Results:")
-        print(f"Average NDCG@5: {start_metrics['avg_ndcg_at_5']:.4f}")
-        print(
-            f"Tasks evaluated: {start_metrics['valid_tasks']}/{start_metrics['total_tasks']}"
-        )
-
-        # Log initial results to wandb if available
-        if wb_run is not None:
-            for task_name, score in start_metrics["ndcg_at_5_by_task"].items():
-                wandb.log({f"eval/ndcg@5/{task_name}": score}, step=0)
-    elif args.eval_tasks and args.skip_eval_init:
-        print("Skipping initial evaluation (--skip-eval-init specified)")
-    else:
-        print("Skipping evaluation (no eval-tasks specified)")
-
     print("\nStarting embedding training...")
     print(
         f"Using learning rate scheduler: cosine decay with {warmup_steps} warmup steps"
@@ -314,22 +253,39 @@ def main():
     print(f"Weight decay: {weight_decay} (Unsloth-optimized for regularization)")
     print(f"Cali dataset version: {args.cali_version}, epochs: {args.epochs}")
 
+    # Create MLX Data stream that outputs training-ready batches directly
+    es_stream = get_cali_stream(
+        version=args.cali_version,
+        batch_size=args.batch_size,
+    )
+
     # Log embedding dimensions
     sample_batch = next(es_stream)
     # Convert numpy arrays to MLX arrays for the model
     sample_batch_mlx = {
         "input_ids": mx.array(sample_batch["tokenized"]),
-        "attention_mask": mx.array(sample_batch["attention_mask"]),
+        "eos_pos": mx.array(sample_batch["eos_pos"]),
         "embedding": mx.array(sample_batch["embedding"]),
     }
-    sample_embeddings = extract_embeddings(
-        model, sample_batch_mlx["input_ids"], sample_batch_mlx["attention_mask"]
+    sample_embeddings = extract_eos_embeddings(
+        model,
+        sample_batch_mlx["input_ids"],
+        sample_batch_mlx["eos_pos"],
     )
-    print(sample_embeddings)
+
     target_dim = sample_batch_mlx["embedding"].shape[1]
     pred_dim = sample_embeddings.shape[1]
-    print(f"Model embedding dimension: {pred_dim}")
-    print(f"Target embedding dimension: {target_dim}")
+    print(
+        f"Model embedding dimension: {pred_dim} \
+        dtype: {sample_embeddings.dtype}  \
+        sample: {sample_embeddings[0]}"
+    )
+    print(
+        f"Target embedding dimension: {target_dim} \
+        dtype: {sample_batch_mlx['embedding'].dtype} \
+        sample: {sample_batch_mlx['embedding'][0]}"
+    )
+
     if target_dim > pred_dim:
         print(
             f"Target embeddings will be truncated from {target_dim} to {pred_dim} dimensions"
@@ -342,16 +298,10 @@ def main():
         print("Embedding dimensions match perfectly")
 
     def compute_loss(batch):
-        # Extract embeddings from the model for the input tokens
-        predicted_embeddings = extract_embeddings(
-            model, batch["input_ids"], batch["attention_mask"]
+        predicted_embeddings = extract_eos_embeddings(
+            model, batch["input_ids"], batch["eos_pos"]
         )
-
-        # Get target embeddings from the batch
         target_embeddings = batch["embedding"]
-
-        # Compute loss between predicted and target embeddings
-        # The loss function will automatically handle dimension mismatch
         loss = loss_fn(predicted_embeddings, target_embeddings)
         return loss
 
@@ -380,7 +330,73 @@ def main():
             config["best_ndcg_at_5"] = best_score
         return config
 
+    wb_run = None
+
     for epoch in range(args.epochs):
+        if epoch == 0:
+            if args.eval_tasks and not args.skip_eval_init:
+                print("Starting MTEB evaluation...")
+                start_metrics = evaluate_mteb_tasks(
+                    adapter_path=0,  # for step 0
+                    max_length=args.max_length,
+                    verbose=True,
+                    model=model,  # Pass already-loaded model
+                    tokenizer=tokenizer,  # Pass already-loaded tokenizer
+                    tasks=args.eval_tasks,
+                )
+
+                print(f"Initial MTEB Results:")
+                print(f"Average NDCG@5: {start_metrics['avg_ndcg_at_5']:.4f}")
+                print(
+                    f"Tasks evaluated: {start_metrics['valid_tasks']}/{start_metrics['total_tasks']}"
+                )
+
+            if wb_run is None and args.wandb and wandb is not None:
+                run_name = (
+                    args.run_name
+                    or f"train-es-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                )
+                wb_run = wandb.init(
+                    project=args.wandb_project,
+                    entity=args.wandb_entity,
+                    name=run_name,
+                    tags=args.tags,
+                    config={
+                        "epochs": args.epochs,
+                        "total_steps": total_steps,
+                        "steps_per_epoch": estimated_steps_per_epoch,
+                        "dataset_size": dataset_size,
+                        "batch_size": args.batch_size,
+                        "max_length": args.max_length,
+                        "learning_rate": learning_rate,
+                        "weight_decay": weight_decay,
+                        "loss": "embedding_mimic",
+                        "cali_version": args.cali_version,
+                        "lora_rank": lora_rank,
+                        "lora_alpha": lora_alpha,
+                        "lora_dropout": lora_dropout,
+                        "lora_layers": lora_layers,
+                        "lora_keys": sorted(lora_keys),
+                        "total_params": int(total_params),
+                        "trainable_params": int(trainable_params),
+                        "max_grad_norm": max_grad_norm,
+                        "warmup_steps": warmup_steps,
+                        "warmup_ratio": warmup_ratio,
+                        "evaluation": (
+                            "MTEB evaluation enabled"
+                            if args.eval_tasks
+                            else "MTEB evaluation disabled"
+                        ),
+                        "eval_steps": args.eval_steps,
+                        "eval_tasks": args.eval_tasks if args.eval_tasks else None,
+                    },
+                )
+
+            # Log initial results to wandb if available
+            if wb_run is not None and args.eval_tasks and not args.skip_eval_init:
+                for task_name, score in start_metrics["ndcg_at_5_by_task"].items():
+                    wandb.log({f"eval/ndcg@5/{task_name}": score}, step=0)
+
         print(f"\nStarting epoch {epoch + 1}/{args.epochs}")
         epoch_start_step = epoch * estimated_steps_per_epoch
 
@@ -395,7 +411,7 @@ def main():
             step += 1
             global_step = epoch_start_step + step
 
-            tokens = training_batch["attention_mask"].sum().item()
+            tokens = training_batch["eos_pos"].sum().item()
             batch_tokens = tokens
 
             t0 = time.perf_counter()
@@ -417,11 +433,9 @@ def main():
                     "input_ids": mx.array(
                         training_batch["tokenized"][start_idx:end_idx]
                     ),
-                    "attention_mask": mx.array(
-                        training_batch["attention_mask"][start_idx:end_idx]
-                    ),
+                    "eos_pos": mx.array(training_batch["eos_pos"][start_idx:end_idx]),
                     "embedding": mx.array(
-                        training_batch["embedding"][start_idx:end_idx]
+                        training_batch["embedding"][start_idx:end_idx],
                     ),
                 }
                 loss, grads = loss_and_grad_fn(micro_batch)
@@ -486,7 +500,9 @@ def main():
                     tasks=args.eval_tasks,
                 )
 
-                print(f"Step {global_step} MTEB Results:")
+                # Restore training mode after evaluation
+                model.train()
+
                 print(f"Average NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f}")
                 print(
                     f"Tasks evaluated: {eval_metrics['valid_tasks']}/{eval_metrics['total_tasks']}"
@@ -501,31 +517,39 @@ def main():
                 # Check if this is a new best score and save to best/ directory
                 best_score_file = "./adapters/best_score.txt"
                 current_best = 0.0
-                
+
                 if os.path.exists(best_score_file):
                     with open(best_score_file, "r") as f:
                         current_best = float(f.read().strip())
-                
-                if eval_metrics['avg_ndcg_at_5'] > current_best:
-                    print(f"New best NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f} (previous: {current_best:.4f})")
-                    
+
+                if eval_metrics["avg_ndcg_at_5"] > current_best:
+                    print(
+                        f"New best NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f} (previous: {current_best:.4f})"
+                    )
+
                     # Save best score
                     os.makedirs("./adapters/best", exist_ok=True)
                     with open(best_score_file, "w") as f:
                         f.write(f"{eval_metrics['avg_ndcg_at_5']}")
-                    
+
                     # Save best model
                     best_dir = "./adapters/best"
                     model.save_weights(os.path.join(best_dir, "adapters.safetensors"))
-                    
+                    print(f"Saved best model to {best_dir}")
+
                     # Save best model config
                     with open(os.path.join(best_dir, "adapter_config.json"), "w") as f:
-                        json.dump(create_adapter_config(step=global_step, best_score=eval_metrics['avg_ndcg_at_5']), f, indent=2)
+                        json.dump(
+                            create_adapter_config(
+                                step=global_step,
+                                best_score=eval_metrics["avg_ndcg_at_5"],
+                            ),
+                            f,
+                            indent=2,
+                        )
 
-            if global_step % args.save_steps == 0:
-                output_dir = (
-                    args.adapters if args.adapters else f"./adapters"
-                )
+            if args.save_steps and global_step % args.save_steps == 0:
+                output_dir = args.adapters if args.adapters else f"./adapters"
                 output_dir = os.path.join(output_dir, f"step_{global_step}")
                 os.makedirs(output_dir, exist_ok=True)
                 model.save_weights(os.path.join(output_dir, "adapters.safetensors"))
@@ -533,6 +557,7 @@ def main():
                 # Save regular checkpoint config
                 with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
                     json.dump(create_adapter_config(step=global_step), f, indent=2)
+                print(f"Saved checkpoint to {output_dir}")
 
         print(f"Epoch {epoch + 1} completed after {step} steps")
 
@@ -550,23 +575,9 @@ def main():
 
         print(f"\nFinal Training Results:")
         print(f"Final Average NDCG@5: {final_metrics['avg_ndcg_at_5']:.4f}")
-        if start_metrics:
-            print(
-                f"Improvement: {final_metrics['avg_ndcg_at_5'] - start_metrics['avg_ndcg_at_5']:.4f}"
-            )
 
         # Log final results to wandb if available
         if wb_run is not None:
-            if start_metrics:
-                wandb.log(
-                    {
-                        "eval/improvement": final_metrics["avg_ndcg_at_5"]
-                        - start_metrics["avg_ndcg_at_5"],
-                    },
-                    step=total_steps,
-                    epoch=args.epochs,
-                )
-
             # Log final individual task results - wandb will auto-group them in the same chart
             for task_name, score in final_metrics["ndcg_at_5_by_task"].items():
                 wandb.log({f"eval/ndcg@5/{task_name}": score}, step=total_steps)

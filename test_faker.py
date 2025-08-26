@@ -20,14 +20,14 @@ def create_sample(line_idx, tokenized_arrays, query_embeddings, doc_embeddings):
     if is_query:
         return {
             "tokenized": tokenized_arrays[line_idx]["query"],
-            "embedding": query_embeddings[line_idx].astype(np.float32),
+            "embedding": query_embeddings[line_idx].astype(np.float16),
             "idx": np.array(line_idx, dtype=np.int32),
             "attention_mask": np.array(attention_mask, dtype=np.int32),
         }
     else:
         return {
             "tokenized": tokenized_arrays[line_idx]["doc"],
-            "embedding": doc_embeddings[line_idx].astype(np.float32),
+            "embedding": doc_embeddings[line_idx].astype(np.float16),
             "idx": np.array(line_idx, dtype=np.int32),
             "attention_mask": np.array(attention_mask, dtype=np.int32),
         }

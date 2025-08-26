@@ -15,21 +15,27 @@ def load_cali_data(version="v6"):
         return _CACHE[version]
 
     if version == "v6":
-        query_embeddings = np.load("data/cal_v6_q.npz")['embeddings'][:,:640]
-        doc_embeddings = np.load("data/cal_v6_d.npz")['embeddings'][:,:640]
+        query_embeddings = np.load("data/cal_v6_q.npz")["embeddings"][:, :640]
+        doc_embeddings = np.load("data/cal_v6_d.npz")["embeddings"][:, :640]
+        query_embeddings = query_embeddings / np.linalg.norm(
+            query_embeddings, axis=1, keepdims=True
+        )
+        doc_embeddings = doc_embeddings / np.linalg.norm(
+            doc_embeddings, axis=1, keepdims=True
+        )
         tokenized_file = "data/v6_tokenize.txt"
     elif version == "v7":
-        query_embeddings = np.load("data/cal_v7_q.npz")['embeddings'][:,:640]
-        doc_embeddings = np.load("data/cal_v7_d.npz")['embeddings'][:,:640]
+        query_embeddings = np.load("data/cal_v7_q.npz")["embeddings"][:, :640]
+        doc_embeddings = np.load("data/cal_v7_d.npz")["embeddings"][:, :640]
+        query_embeddings = query_embeddings / np.linalg.norm(
+            query_embeddings, axis=1, keepdims=True
+        )
+        doc_embeddings = doc_embeddings / np.linalg.norm(
+            doc_embeddings, axis=1, keepdims=True
+        )
         tokenized_file = "data/v7_tokenize.txt"
-    elif version == "v5":
-        query_embeddings = np.load("data/cal_v5_q.npy")
-        doc_embeddings = np.load("data/cal_v5_d.npy")
-        tokenized_file = "cal_v5_tokenize.txt"
     else:
-        query_embeddings = np.load("data/cal_v3_q.npy")
-        doc_embeddings = np.load("data/cal_v3_d.npy")
-        tokenized_file = "cal_v3_tokenize.txt"
+        raise ValueError(f"Invalid version: {version}")
 
     # Pre-process all tokenized lines to numpy arrays
     with open(tokenized_file, "r") as f:
@@ -46,6 +52,7 @@ def load_cali_data(version="v6"):
             {
                 "query": np.array(query_tokens, dtype=np.int32),
                 "doc": np.array(doc_tokens, dtype=np.int32),
+                "eos_pos": len(tokens) + 1,  # bos, role (+1), content - bos, eos
             }
         )
 
@@ -53,38 +60,30 @@ def load_cali_data(version="v6"):
     return _CACHE[version]
 
 
-def create_sample(line_idx, tokenized_arrays, query_embeddings, doc_embeddings):
-    """Create a single sample with random role assignment"""
-    is_query = random.choice([True, False])
-
-    # exclude bos and eos
-    attention_mask = [0] + [1] * (len(tokenized_arrays[line_idx]["query"]) - 2) + [0]
-    if is_query:
-        return {
-            "tokenized": tokenized_arrays[line_idx]["query"],
-            "embedding": query_embeddings[line_idx].astype(np.float16),
-            "idx": np.array(line_idx, dtype=np.int32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-        }
-    else:
-        return {
-            "tokenized": tokenized_arrays[line_idx]["doc"],
-            "embedding": doc_embeddings[line_idx].astype(np.float16),
-            "idx": np.array(line_idx, dtype=np.int32),
-            "attention_mask": np.array(attention_mask, dtype=np.int32),
-        }
-
-
 def sample_generator(tokenized_arrays, query_embeddings, doc_embeddings):
     """Generate samples with random role assignment"""
     indices = list(range(len(tokenized_arrays)))
+    is_queries = np.random.randint(0, 2, len(indices))
     random.shuffle(indices)
     for idx in indices:
-        yield create_sample(idx, tokenized_arrays, query_embeddings, doc_embeddings)
+        is_query = is_queries[idx]
+        sample = {
+            "idx": np.array(idx, dtype=np.int32),
+            "eos_pos": tokenized_arrays[idx]["eos_pos"],
+        }
+
+        if is_query:
+            sample["tokenized"] = tokenized_arrays[idx]["query"]
+            sample["embedding"] = query_embeddings[idx].astype(np.float32)
+        else:
+            sample["tokenized"] = tokenized_arrays[idx]["doc"]
+            sample["embedding"] = doc_embeddings[idx].astype(np.float32)
+        yield sample
 
 
 def get_cali_stream(version="v6", batch_size=4):
     """Create MLX Data stream with shuffling and dynamic batching"""
+
     query_embeddings, doc_embeddings, tokenized_arrays = load_cali_data(version)
 
     stream = dx.stream_python_iterable(

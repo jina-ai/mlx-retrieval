@@ -22,6 +22,8 @@ class MLXWrapper(Wrapper):
         self.model = model
         self.tokenizer = tokenizer
         self.max_length = max_length
+        # Ensure model is in evaluation mode to disable dropout during inference
+        self.model.eval()
 
     def encode(
         self,
@@ -33,9 +35,12 @@ class MLXWrapper(Wrapper):
     ) -> np.ndarray:
         print(f"Encoding {task_name} with prompt type {prompt_type.value}")
         embeddings = encode_texts(
-            self.model, self.tokenizer, sentences, 
+            self.model,
+            self.tokenizer,
+            sentences,
             prompt_type.value,
-            self.max_length
+            pooling="eos",
+            max_length=self.max_length,
         )
         return embeddings
 
