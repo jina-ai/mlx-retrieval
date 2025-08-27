@@ -146,8 +146,8 @@ def main():
         lora_dropout = lp.get("dropout", lora_dropout)
         keys = lp.get("keys")
         if isinstance(keys, list) and keys:
-            lora_keys = set(keys)          
-    
+            lora_keys = set(keys)
+
     model, tokenizer = load(args.model)
     model = apply_lora_to_model(
         model,
@@ -160,7 +160,9 @@ def main():
 
     if args.adapter:
         # load adapter weights and this will make the lora resume-trainable
-        model.load_weights(os.path.join(args.adapter, "adapters.safetensors"), strict=False)
+        model.load_weights(
+            os.path.join(args.adapter, "adapters.safetensors"), strict=False
+        )
 
     model.set_dtype(mx.float32)
     # Ensure model is in training mode for dropout to be active
@@ -192,7 +194,7 @@ def main():
     )
 
     # Calculate total tokens from space separated tokens in the file
-    
+
     with open(f"data/{args.cali_version}_tokenize.txt", "r") as f:
         content = f.readlines()
         num_tokens = sum(len(line.split()) for line in content)
@@ -278,10 +280,12 @@ def main():
     def compute_loss(batch):
         predicted = extract_eos_embeddings(model, batch["input_ids"], batch["eos_pos"])
         target = batch["embedding"]
-        
-        similarity = nn.losses.cosine_similarity_loss(predicted, target, reduction="mean")
-        cosine_loss = 1 - similarity 
-        
+
+        similarity = nn.losses.cosine_similarity_loss(
+            predicted, target, reduction="mean"
+        )
+        cosine_loss = 1 - similarity
+
         return cosine_loss
 
     # Define the state that will be captured by compile
@@ -314,11 +318,12 @@ def main():
             else:
                 accum_grads = grads
 
-        # Normalize accumulated gradients
-        accum_grads = tree_map(lambda g: g / grad_steps, accum_grads)
+        if grad_steps > 1:
+            # Normalize accumulated gradients
+            accum_grads = tree_map(lambda g: g / grad_steps, accum_grads)
 
         # Gradient clipping
-        accum_grads, _ = optim.clip_grad_norm(accum_grads, max_grad_norm)
+        # accum_grads, _ = optim.clip_grad_norm(accum_grads, max_grad_norm)
 
         # Update with accumulated gradients
         optimizer.update(model, accum_grads)
@@ -351,6 +356,8 @@ def main():
         return config
 
     wb_run = None
+
+    step = 0
 
     for epoch in range(args.epochs):
         if epoch == 0:
@@ -388,7 +395,6 @@ def main():
                         "max_length": args.max_length,
                         "learning_rate": learning_rate,
                         "weight_decay": weight_decay,
-                        "loss": "embedding_mimic",
                         "cali_version": args.cali_version,
                         "lora_rank": lora_rank,
                         "lora_alpha": lora_alpha,
@@ -409,22 +415,20 @@ def main():
                         "eval_tasks": args.eval_tasks if args.eval_tasks else None,
                     },
                 )
-
             # Log initial results to wandb if available
             if wb_run is not None and args.eval_tasks and not args.skip_eval_init:
                 for task_name, score in start_metrics["ndcg_at_5_by_task"].items():
                     wandb.log({f"eval/ndcg@5/{task_name}": score}, step=0)
 
         print(f"\nStarting epoch {epoch + 1}/{args.epochs}")
-        epoch_start_step = epoch * estimated_steps_per_epoch
 
         # Reset data stream for each epoch
-        es_stream = get_cali_stream(version=args.cali_version, batch_size=args.batch_size)
+        es_stream = get_cali_stream(
+            version=args.cali_version, batch_size=args.batch_size
+        )
 
-        step = 0
         for training_batch in es_stream:
             step += 1
-            global_step = epoch_start_step + step
 
             tokens = training_batch["eos_pos"].sum().item()
             batch_tokens = tokens
@@ -451,13 +455,13 @@ def main():
             token_per_sec = batch_tokens / dt if dt > 0 else 0.0
 
             # Get current learning rate from scheduler
-            current_lr = lr_schedule(global_step)
+            current_lr = lr_schedule(step)
 
             print(
-                f"Epoch {epoch + 1}/{args.epochs}, Step {global_step}/{total_steps}, Loss: {avg_loss_scalar:.4f}, LR: {float(current_lr):.2e}, tokens/sec: {token_per_sec:.0f}"
+                f"Epoch {epoch + 1}/{args.epochs}, Step {step}/{total_steps}, Loss: {avg_loss_scalar:.4f}, LR: {float(current_lr):.2e}, tokens/sec: {token_per_sec:.0f}"
             )
 
-            if global_step % 10 == 0 and wb_run is not None:
+            if step % 10 == 0 and wb_run is not None:
                 wandb.log(
                     {
                         "train/loss": avg_loss_scalar,
@@ -465,13 +469,13 @@ def main():
                         "train/tokens_per_sec": token_per_sec,
                         "train/batch_tokens": batch_tokens,
                     },
-                    step=global_step,
+                    step=step,
                 )
 
-            if global_step % args.eval_steps == 0 and args.eval_tasks:
-                print(f"\nRunning MTEB evaluation at step {global_step}...")
+            if step % args.eval_steps == 0 and args.eval_tasks:
+                print(f"\nRunning MTEB evaluation at step {step}...")
                 eval_metrics = evaluate_mteb_tasks(
-                    adapter_path=global_step,
+                    adapter_path=step,
                     max_length=args.max_length,
                     verbose=False,
                     model=model,  # Pass already-loaded model
@@ -491,7 +495,7 @@ def main():
                 if wb_run is not None:
                     # Log individual task results - wandb will auto-group them in the same chart
                     for task_name, score in eval_metrics["ndcg_at_5_by_task"].items():
-                        wandb.log({f"eval/ndcg@5/{task_name}": score}, step=global_step)
+                        wandb.log({f"eval/ndcg@5/{task_name}": score}, step=step)
 
                 # Check if this is a new best score and save to best/ directory
                 best_score_file = "./adapters/best_score.txt"
@@ -524,16 +528,16 @@ def main():
                     with open(os.path.join(best_dir, "adapter_config.json"), "w") as f:
                         json.dump(
                             create_adapter_config(
-                                step=global_step,
+                                step=step,
                                 best_score=eval_metrics["avg_ndcg_at_5"],
                             ),
                             f,
                             indent=2,
                         )
 
-            if args.save_steps and global_step % args.save_steps == 0:
+            if args.save_steps and step % args.save_steps == 0:
                 output_dir = args.adapter if args.adapter else f"./adapters"
-                output_dir = os.path.join(output_dir, f"step_{global_step}")
+                output_dir = os.path.join(output_dir, f"step_{step}")
                 os.makedirs(output_dir, exist_ok=True)
                 adapter_weights = dict(tree_flatten(model.trainable_parameters()))
                 mx.save_safetensors(
@@ -543,7 +547,7 @@ def main():
 
                 # Save regular checkpoint config
                 with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
-                    json.dump(create_adapter_config(step=global_step), f, indent=2)
+                    json.dump(create_adapter_config(step=step), f, indent=2)
                 print(f"Saved checkpoint to {output_dir}")
 
         print(f"Epoch {epoch + 1} completed after {step} steps")
