@@ -14,28 +14,16 @@ def load_cali_data(version="v6"):
     if version in _CACHE:
         return _CACHE[version]
 
-    if version == "v6":
-        query_embeddings = np.load("data/cal_v6_q.npz")["embeddings"][:, :640]
-        doc_embeddings = np.load("data/cal_v6_d.npz")["embeddings"][:, :640]
-        query_embeddings = query_embeddings / np.linalg.norm(
-            query_embeddings, axis=1, keepdims=True
-        )
-        doc_embeddings = doc_embeddings / np.linalg.norm(
-            doc_embeddings, axis=1, keepdims=True
-        )
-        tokenized_file = "data/v6_tokenize.txt"
-    elif version == "v7":
-        query_embeddings = np.load("data/cal_v7_q.npz")["embeddings"][:, :640]
-        doc_embeddings = np.load("data/cal_v7_d.npz")["embeddings"][:, :640]
-        query_embeddings = query_embeddings / np.linalg.norm(
-            query_embeddings, axis=1, keepdims=True
-        )
-        doc_embeddings = doc_embeddings / np.linalg.norm(
-            doc_embeddings, axis=1, keepdims=True
-        )
-        tokenized_file = "data/v7_tokenize.txt"
-    else:
-        raise ValueError(f"Invalid version: {version}")
+    # Dynamic file paths based on version parameter
+    query_embeddings = np.load(f"data/cal_{version}_q.npz")["embeddings"][:, :640]
+    doc_embeddings = np.load(f"data/cal_{version}_d.npz")["embeddings"][:, :640]
+    query_embeddings = query_embeddings / np.linalg.norm(
+        query_embeddings, axis=1, keepdims=True
+    )
+    doc_embeddings = doc_embeddings / np.linalg.norm(
+        doc_embeddings, axis=1, keepdims=True
+    )
+    tokenized_file = f"data/{version}_tokenize.txt"
 
     # Pre-process all tokenized lines to numpy arrays
     with open(tokenized_file, "r") as f:

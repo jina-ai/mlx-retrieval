@@ -45,30 +45,17 @@ model = SentenceTransformer("Qwen/Qwen3-Embedding-0.6B")
 print(f"Model loaded successfully. Max sequence length: {model.get_max_seq_length()}")
 
 # Encode the documents with batch processing and progress tracking
-print("Encoding documents with batch size 512...")
-batch_size = 16
+batch_size = 32
 document_embeddings = []
 
-for i in tqdm(range(0, len(lines), batch_size), desc="Encoding documents"):
-    batch = lines[i : i + batch_size]
-    batch_embeddings = model.encode(batch)
-    document_embeddings.append(batch_embeddings)
+document_embeddings = model.encode(lines, batch_size=batch_size, show_progress_bar=True)
 
-# Concatenate all batches
-document_embeddings = np.vstack(document_embeddings)
 print(f"Document embeddings shape: {document_embeddings.shape}")
 
-# Encode the same lines as queries with batch processing and progress tracking
-print("Encoding queries with batch size 128...")
-query_embeddings = []
+query_embeddings = model.encode(
+    lines, prompt_name="query", batch_size=batch_size, show_progress_bar=True
+)
 
-for i in tqdm(range(0, len(lines), batch_size), desc="Encoding queries"):
-    batch = lines[i : i + batch_size]
-    batch_embeddings = model.encode(batch, prompt_name="query")
-    query_embeddings.append(batch_embeddings)
-
-# Concatenate all batches
-query_embeddings = np.vstack(query_embeddings)
 print(f"Query embeddings shape: {query_embeddings.shape}")
 
 # Save the embeddings with compression

@@ -24,7 +24,7 @@ fake = Faker(
 fake.seed_instance(4321)
 
 all_data = set()
-for _ in range(5000):
+for _ in range(1000):
     data = [
         fake.address(),
         fake.name(),

@@ -4,6 +4,7 @@ import json
 import os
 import time
 from datetime import datetime
+from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -78,15 +79,6 @@ def apply_lora_to_model(
 
     print(f"Converted {converted} linear layers to LoRA: {sorted(set(target_names))}")
 
-    trainable_params = (
-        sum(v.size for _, v in tree_flatten(model.trainable_parameters())) / 10**6
-    )
-    print(f"Trainable parameters: {trainable_params:.3f}M")
-    if trainable_params > 0.0:
-        print(f"LoRA applied ({trainable_params/total_params*100:.2f}% trainable)")
-    else:
-        print("Warning: no trainable parameters detected after LoRA injection")
-
     return model
 
 
@@ -96,7 +88,7 @@ def main():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--model", type=str, default="gemma-3-270m-mlx")
-    parser.add_argument("--adapters", type=str, default=None)
+    parser.add_argument("--adapter", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="mlx-eos-embed-v4")
     parser.add_argument("--wandb-entity", type=str, default=None)
@@ -147,31 +139,31 @@ def main():
         "mlp.down_proj",
     }
 
-    if args.adapters:
-        model, tokenizer = load(args.model, adapter_path=args.adapters)
-        try:
-            with open(os.path.join(args.adapters, "adapter_config.json"), "r") as f:
-                cfg = json.load(f)
-            lora_layers = cfg.get("num_layers", lora_layers)
-            lp = cfg.get("lora_parameters", {})
-            lora_rank = lp.get("rank", lora_rank)
-            lora_alpha = lp.get("alpha", lora_alpha)
-            lora_dropout = lp.get("dropout", lora_dropout)
-            keys = lp.get("keys")
-            if isinstance(keys, list) and keys:
-                lora_keys = set(keys)
-        except Exception as e:
-            pass
-    else:
-        model, tokenizer = load(args.model)
-        model = apply_lora_to_model(
-            model,
-            lora_layers=lora_layers,
-            rank=lora_rank,
-            scale=lora_alpha,
-            dropout=lora_dropout,
-            lora_keys=lora_keys,
-        )
+    if args.adapter:
+        with open(os.path.join(args.adapter, "adapter_config.json"), "r") as f:
+            cfg = json.load(f)
+        lora_layers = cfg.get("num_layers", lora_layers)
+        lp = cfg.get("lora_parameters", {})
+        lora_rank = lp.get("rank", lora_rank)
+        lora_alpha = lp.get("alpha", lora_alpha)
+        lora_dropout = lp.get("dropout", lora_dropout)
+        keys = lp.get("keys")
+        if isinstance(keys, list) and keys:
+            lora_keys = set(keys)          
+    
+    model, tokenizer = load(args.model)
+    model = apply_lora_to_model(
+        model,
+        lora_layers=lora_layers,
+        rank=lora_rank,
+        scale=lora_alpha,
+        dropout=lora_dropout,
+        lora_keys=lora_keys,
+    )
+
+    if args.adapter:
+        # load adapter weights and this will make the lora resume-trainable
+        model.load_weights(os.path.join(args.adapter, "adapters.safetensors"), strict=False)
 
     model.set_dtype(mx.float32)
     # Ensure model is in training mode for dropout to be active
@@ -182,10 +174,13 @@ def main():
 
     # Print all model layers float types
     print("Model layers float types:")
-    from mlx.utils import tree_flatten
 
     # Use tree_flatten to recursively access all parameters
     flattened_params = tree_flatten(model.parameters())
+    total_params = sum(v.size for _, v in flattened_params)
+    trainable_params = sum(
+        v.size for _, v in tree_flatten(model.trainable_parameters())
+    )
     for name, param in flattened_params:
         if hasattr(param, "dtype"):
             print(f"  {name}: {param.dtype}")
@@ -232,10 +227,13 @@ def main():
 
     optimizer = optim.AdamW(learning_rate=lr_schedule, weight_decay=weight_decay)
 
-    total_params = sum(v.size for _, v in tree_flatten(model.parameters()))
-    trainable_params = sum(
-        v.size for _, v in tree_flatten(model.trainable_parameters())
-    )
+    print(f"Trainable parameters: {trainable_params}")
+    if trainable_params > 0.0:
+        print(f"LoRA applied ({trainable_params/total_params*100:.2f}% trainable)")
+    else:
+        raise ValueError(
+            "Warning: no trainable parameters detected after LoRA injection"
+        )
 
     print("\nStarting embedding training...")
     print(
@@ -305,6 +303,47 @@ def main():
         loss = loss_fn(predicted_embeddings, target_embeddings)
         return loss
 
+    # Define the state that will be captured by compile
+    state = [model.state, optimizer.state, mx.random.state]
+
+    @partial(mx.compile, inputs=state, outputs=state)
+    def step_with_grad_accum(batch, grad_steps):
+        # Initialize accumulator
+        accum_grads = None
+        total_loss = 0.0
+
+        batch_size = batch["tokenized"].shape[0]
+        micro_batch_size = batch_size // grad_steps
+
+        for micro_step in range(grad_steps):
+            start_idx = micro_step * micro_batch_size
+            end_idx = min(start_idx + micro_batch_size, batch_size)
+
+            micro_batch = {
+                "input_ids": batch["tokenized"][start_idx:end_idx],
+                "eos_pos": batch["eos_pos"][start_idx:end_idx],
+                "embedding": batch["embedding"][start_idx:end_idx],
+            }
+
+            loss, grads = loss_and_grad_fn(micro_batch)
+            total_loss += loss
+
+            if accum_grads is not None:
+                accum_grads = tree_map(mx.add, grads, accum_grads)
+            else:
+                accum_grads = grads
+
+        # Normalize accumulated gradients
+        accum_grads = tree_map(lambda g: g / grad_steps, accum_grads)
+
+        # Gradient clipping
+        accum_grads, _ = optim.clip_grad_norm(accum_grads, max_grad_norm)
+
+        # Update with accumulated gradients
+        optimizer.update(model, accum_grads)
+
+        return total_loss / grad_steps
+
     loss_and_grad_fn = nn.value_and_grad(model, compute_loss)
 
     # Helper function to create adapter config
@@ -353,8 +392,7 @@ def main():
 
             if wb_run is None and args.wandb and wandb is not None:
                 run_name = (
-                    args.run_name
-                    or f"train-es-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+                    args.run_name or f"emb-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
                 )
                 wb_run = wandb.init(
                     project=args.wandb_project,
@@ -415,73 +453,37 @@ def main():
             batch_tokens = tokens
 
             t0 = time.perf_counter()
-            # get the actual batch size
-            batch_size = training_batch["tokenized"].shape[0]
-            grad_steps = args.gradient_accumulation_steps
-            # get the micro batch size
-            micro_batch_size = batch_size // grad_steps
 
-            # Initialize accumulator
-            accum_grads = None
-            total_loss = 0.0  # Track loss for logging
+            # Convert batch to MLX arrays
+            mlx_batch = {
+                "tokenized": mx.array(training_batch["tokenized"]),
+                "eos_pos": mx.array(training_batch["eos_pos"]),
+                "embedding": mx.array(training_batch["embedding"]),
+            }
 
-            for micro_step in range(grad_steps):
-                start_idx = micro_step * micro_batch_size
-                end_idx = min(start_idx + micro_batch_size, batch_size)
+            # Execute compiled training step
+            avg_loss = step_with_grad_accum(mlx_batch, args.gradient_accumulation_steps)
 
-                micro_batch = {
-                    "input_ids": mx.array(
-                        training_batch["tokenized"][start_idx:end_idx]
-                    ),
-                    "eos_pos": mx.array(training_batch["eos_pos"][start_idx:end_idx]),
-                    "embedding": mx.array(
-                        training_batch["embedding"][start_idx:end_idx],
-                    ),
-                }
-                loss, grads = loss_and_grad_fn(micro_batch)
-                total_loss += loss.item()  # Convert to Python float immediately
-                if accum_grads is not None:
-                    accum_grads = tree_map(mx.add, grads, accum_grads)
-                else:
-                    accum_grads = grads
+            # Evaluate state to ensure updates are applied
+            mx.eval(state)
 
-                # Clean up micro-batch resources
-                del micro_batch
-                del grads
-                del loss  # Delete loss tensor
-                mx.eval(accum_grads)
-
-            # Clean up training batch after all micro-batches processed
-            del training_batch
-            # Normalize accumulated gradients by total weight
-            accum_grads = tree_map(lambda g: g / grad_steps, accum_grads)
-
-            # Add gradient clipping for training stability
-            accum_grads, _ = optim.clip_grad_norm(accum_grads, max_grad_norm)
-
-            # Update with accumulated gradients
-            optimizer.update(model, accum_grads)
-            mx.eval(model.trainable_parameters(), optimizer.state)
-
-            # Clean up accumulated gradients
-            del accum_grads
+            # Convert MLX array to Python scalar for logging
+            avg_loss_scalar = avg_loss.item()
 
             dt = time.perf_counter() - t0
-
-            avg_loss = total_loss / grad_steps
             token_per_sec = batch_tokens / dt if dt > 0 else 0.0
 
             # Get current learning rate from scheduler
             current_lr = lr_schedule(global_step)
 
             print(
-                f"Epoch {epoch + 1}/{args.epochs}, Step {global_step}/{total_steps}, Loss: {avg_loss:.4f}, LR: {float(current_lr):.2e}, tokens/sec: {token_per_sec:.0f}"
+                f"Epoch {epoch + 1}/{args.epochs}, Step {global_step}/{total_steps}, Loss: {avg_loss_scalar:.4f}, LR: {float(current_lr):.2e}, tokens/sec: {token_per_sec:.0f}"
             )
 
             if global_step % 10 == 0 and wb_run is not None:
                 wandb.log(
                     {
-                        "train/loss": avg_loss,
+                        "train/loss": avg_loss_scalar,
                         "train/learning_rate": float(current_lr),
                         "train/tokens_per_sec": token_per_sec,
                         "train/batch_tokens": batch_tokens,
@@ -535,7 +537,10 @@ def main():
                     # Save best model
                     best_dir = "./adapters/best"
                     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-                    mx.save_safetensors(best_dir, adapter_weights)
+                    mx.save_safetensors(
+                        str(os.path.join(best_dir, "adapters.safetensors")),
+                        adapter_weights,
+                    )
                     print(f"Saved best model to {best_dir}")
 
                     # Save best model config
@@ -550,11 +555,14 @@ def main():
                         )
 
             if args.save_steps and global_step % args.save_steps == 0:
-                output_dir = args.adapters if args.adapters else f"./adapters"
+                output_dir = args.adapter if args.adapter else f"./adapters"
                 output_dir = os.path.join(output_dir, f"step_{global_step}")
                 os.makedirs(output_dir, exist_ok=True)
                 adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-                mx.save_safetensors(str(output_dir), adapter_weights)
+                mx.save_safetensors(
+                    str(os.path.join(output_dir, "adapters.safetensors")),
+                    adapter_weights,
+                )
 
                 # Save regular checkpoint config
                 with open(os.path.join(output_dir, "adapter_config.json"), "w") as f:
@@ -586,10 +594,12 @@ def main():
     else:
         print("\nSkipping final evaluation (no eval-tasks specified)")
 
-    final_output_dir = args.adapters if args.adapters else "./adapters/final"
+    final_output_dir = args.adapter if args.adapter else "./adapters/final"
     os.makedirs(final_output_dir, exist_ok=True)
     adapter_weights = dict(tree_flatten(model.trainable_parameters()))
-    mx.save_safetensors(final_output_dir, adapter_weights)
+    mx.save_safetensors(
+        str(os.path.join(final_output_dir, "adapters.safetensors")), adapter_weights
+    )
 
     adapter_config = {
         "fine_tune_type": "lora",
