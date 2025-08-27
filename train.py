@@ -118,7 +118,6 @@ def main():
     args = parser.parse_args()
 
     # Optimal training parameters based on SOTA research
-    max_grad_norm = 1.0  # Optimal: 1.0 (standard for embedding models)
     warmup_ratio = 0.1  # Optimal: 10% warmup (standard practice)
 
     # Optimal LoRA parameters based on SOTA models (NV-Embed, E5-Mistral, etc.)
@@ -228,7 +227,6 @@ def main():
     print(
         f"Using learning rate scheduler: cosine decay with {warmup_steps} warmup steps"
     )
-    print(f"Gradient clipping enabled with max_norm={max_grad_norm}")
     print(
         f"MLX-optimized LoRA: rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout} (Unsloth-optimized)"
     )
@@ -358,6 +356,7 @@ def main():
     wb_run = None
 
     step = 0
+    accum_loss = 0.0
 
     for epoch in range(args.epochs):
         if epoch == 0:
@@ -403,7 +402,6 @@ def main():
                         "lora_keys": sorted(lora_keys),
                         "total_params": int(total_params),
                         "trainable_params": int(trainable_params),
-                        "max_grad_norm": max_grad_norm,
                         "warmup_steps": warmup_steps,
                         "warmup_ratio": warmup_ratio,
                         "evaluation": (
@@ -450,6 +448,7 @@ def main():
 
             # Convert MLX array to Python scalar for logging
             avg_loss_scalar = avg_loss.item()
+            accum_loss += avg_loss_scalar
 
             dt = time.perf_counter() - t0
             token_per_sec = batch_tokens / dt if dt > 0 else 0.0
@@ -464,13 +463,14 @@ def main():
             if step % 10 == 0 and wb_run is not None:
                 wandb.log(
                     {
-                        "train/loss": avg_loss_scalar,
+                        "train/loss": accum_loss,
                         "train/learning_rate": float(current_lr),
                         "train/tokens_per_sec": token_per_sec,
                         "train/batch_tokens": batch_tokens,
                     },
                     step=step,
                 )
+                accum_loss = 0.0
 
             if step % args.eval_steps == 0 and args.eval_tasks:
                 print(f"\nRunning MTEB evaluation at step {step}...")
