@@ -22,9 +22,6 @@ except Exception:
 from embed import extract_eos_embeddings
 from cali_data_loader_eos import get_cali_stream
 from eval_mteb import evaluate_mteb_tasks
-from loss import (
-    EmbeddingMimicLoss,
-)
 
 
 def apply_lora_to_model(
@@ -84,13 +81,13 @@ def apply_lora_to_model(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--model", type=str, default="gemma-3-270m-mlx")
     parser.add_argument("--adapter", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="mlx-eos-embed-v4")
+    parser.add_argument("--wandb-project", type=str, default="mlx-eos-v5")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--tags", nargs="*", default=[])
@@ -188,32 +185,22 @@ def main():
             print(f"  {name}: {type(param)}")
     print()
 
-    # Use embedding mimic loss for training embeddings to match targets
-    # Research shows combining L1/L2 with cosine similarity is more effective than cosine alone
-    loss_fn = EmbeddingMimicLoss(
-        normalize=True,
-        alpha=0.6,  # Weight for L2 distance loss (cosine weight automatically 0.4)
-        distance_type="l2",  # Use L2 loss for better gradient properties
-    )
-
     # MLX-optimized learning rate and weight decay
     learning_rate = 2e-4  # Optimal: 2e-4 (per Unsloth research for LoRA)
     weight_decay = (
         0.01  # Optimal: 0.01 (per Unsloth research for better regularization)
     )
 
-    # Calculate total steps based on epochs and dataset size
-    # Get dataset size for epoch calculation (for logging purposes only)
-    # open "data/v7_tokenize.txt" and count the number of lines
+    # Calculate total tokens from space separated tokens in the file
+    
     with open(f"data/{args.cali_version}_tokenize.txt", "r") as f:
-        dataset_size = len(f.readlines())
+        content = f.readlines()
+        num_tokens = sum(len(line.split()) for line in content)
 
-    print(f"Dataset size: {dataset_size} samples")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Estimated steps per epoch: ~{dataset_size // args.batch_size}")
+    print(f"Dataset size: {num_tokens} tokens")
 
     # Update learning rate scheduler for estimated total steps
-    estimated_steps_per_epoch = dataset_size // args.batch_size
+    estimated_steps_per_epoch = num_tokens // args.batch_size
     total_steps = estimated_steps_per_epoch * args.epochs
     warmup_steps = max(1, int(total_steps * warmup_ratio))
 
@@ -239,23 +226,16 @@ def main():
     print(
         f"Using learning rate scheduler: cosine decay with {warmup_steps} warmup steps"
     )
-    print(
-        f"Batch size: {args.batch_size}, gradient accumulation steps: {args.gradient_accumulation_steps}, micro batch size: {args.batch_size // args.gradient_accumulation_steps}"
-    )
     print(f"Gradient clipping enabled with max_norm={max_grad_norm}")
     print(
         f"MLX-optimized LoRA: rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout} (Unsloth-optimized)"
     )
-    print(f"Using loss: embedding mimic (cosine similarity)")
     print(f"Learning rate: {learning_rate} (Unsloth-optimized for LoRA)")
     print(f"Weight decay: {weight_decay} (Unsloth-optimized for regularization)")
     print(f"Cali dataset version: {args.cali_version}, epochs: {args.epochs}")
 
     # Create MLX Data stream that outputs training-ready batches directly
-    es_stream = get_cali_stream(
-        version=args.cali_version,
-        batch_size=args.batch_size,
-    )
+    es_stream = get_cali_stream(version=args.cali_version, batch_size=args.batch_size)
 
     # Log embedding dimensions
     sample_batch = next(es_stream)
@@ -296,12 +276,13 @@ def main():
         print("Embedding dimensions match perfectly")
 
     def compute_loss(batch):
-        predicted_embeddings = extract_eos_embeddings(
-            model, batch["input_ids"], batch["eos_pos"]
-        )
-        target_embeddings = batch["embedding"]
-        loss = loss_fn(predicted_embeddings, target_embeddings)
-        return loss
+        predicted = extract_eos_embeddings(model, batch["input_ids"], batch["eos_pos"])
+        target = batch["embedding"]
+        
+        similarity = nn.losses.cosine_similarity_loss(predicted, target, reduction="mean")
+        cosine_loss = 1 - similarity 
+        
+        return cosine_loss
 
     # Define the state that will be captured by compile
     state = [model.state, optimizer.state, mx.random.state]
@@ -403,8 +384,7 @@ def main():
                         "epochs": args.epochs,
                         "total_steps": total_steps,
                         "steps_per_epoch": estimated_steps_per_epoch,
-                        "dataset_size": dataset_size,
-                        "batch_size": args.batch_size,
+                        "dataset_num_tokens": num_tokens,
                         "max_length": args.max_length,
                         "learning_rate": learning_rate,
                         "weight_decay": weight_decay,
@@ -439,10 +419,7 @@ def main():
         epoch_start_step = epoch * estimated_steps_per_epoch
 
         # Reset data stream for each epoch
-        es_stream = get_cali_stream(
-            version=args.cali_version,
-            batch_size=args.batch_size,
-        )
+        es_stream = get_cali_stream(version=args.cali_version, batch_size=args.batch_size)
 
         step = 0
         for training_batch in es_stream:
