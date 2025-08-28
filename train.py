@@ -463,7 +463,7 @@ def main():
             if step % 10 == 0 and wb_run is not None:
                 wandb.log(
                     {
-                        "train/loss": accum_loss,
+                        "train/loss": accum_loss / 10,
                         "train/learning_rate": float(current_lr),
                         "train/tokens_per_sec": token_per_sec,
                         "train/batch_tokens": batch_tokens,
