@@ -108,7 +108,10 @@ def main():
         "--save-steps", type=int, default=None, help="Save every N steps"
     )
     parser.add_argument(
-        "--data-version", nargs="*", default=["v6", "v7", "v8"], help="Calibration data version"
+        "--data-version",
+        nargs="*",
+        default=["v6", "v7", "v8"],
+        help="Calibration data version",
     )
     parser.add_argument(
         "--epochs", type=int, default=10, help="Number of training epochs"
@@ -157,9 +160,9 @@ def main():
         if not args.no_lora or args.adapter:
             if not args.no_lora:
                 model.freeze()
-                # if adapter is provided and no_lora is true, that means we need to fuse 
+                # if adapter is provided and no_lora is true, that means we need to fuse
                 # the adapter into the model and the model should be trainable overall
-            
+
             model = apply_lora_to_model(
                 model,
                 lora_layers=lora_layers,
@@ -184,11 +187,9 @@ def main():
                 if fused_linears:
                     model.update_modules(tree_unflatten(fused_linears))
 
-
     model.set_dtype(mx.float32)
     # Ensure model is in training mode for dropout to be active
     model.train()
-
 
     # Print all model layers float types
     print("Model layers float types:")
@@ -235,7 +236,9 @@ def main():
 
     optimizer = optim.AdamW(learning_rate=lr_schedule, weight_decay=weight_decay)
 
-    print(f"Trainable parameters: {trainable_params}/{total_params} = {trainable_params/total_params*100:.2f}%")
+    print(
+        f"Trainable parameters: {trainable_params}/{total_params} = {trainable_params/total_params*100:.2f}%"
+    )
     if trainable_params == 0:
         raise ValueError(
             "Warning: no trainable parameters detected after LoRA injection"
@@ -351,21 +354,26 @@ def main():
 
     # Helper function to create adapter config
     def create_adapter_config(step=None, best_score=None):
-        config = {
-            "fine_tune_type": "lora",
-            "num_layers": (
-                len(model.layers)
-                if (lora_layers is None or lora_layers < 0)
-                else lora_layers
-            ),
-            "lora_parameters": {
-                "rank": lora_rank,
-                "alpha": lora_alpha,
-                "scale": lora_alpha,
-                "dropout": lora_dropout,
-                "keys": sorted(list(lora_keys)),
-            },
-        }
+        if not args.no_lora:
+            config = {
+                "fine_tune_type": "lora",
+                "num_layers": (
+                    len(model.layers)
+                    if (lora_layers is None or lora_layers < 0)
+                    else lora_layers
+                ),
+                "lora_parameters": {
+                    "rank": lora_rank,
+                    "alpha": lora_alpha,
+                    "scale": lora_alpha,
+                    "dropout": lora_dropout,
+                    "keys": sorted(list(lora_keys)),
+                },
+            }
+        else:
+            config = {
+                "fine_tune_type": "full",
+            }
         if step is not None:
             config["step"] = step
         if best_score is not None:
