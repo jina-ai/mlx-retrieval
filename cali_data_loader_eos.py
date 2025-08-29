@@ -71,8 +71,22 @@ def sample_generator(tokenized_arrays, query_embeddings, doc_embeddings):
 
 def get_cali_stream(version="v6", batch_size=10000):
     """Create MLX Data stream with shuffling and dynamic batching"""
+    if isinstance(version, str):
+        version = [version]
 
-    query_embeddings, doc_embeddings, tokenized_arrays = load_cali_data(version)
+    query_embeddings = []
+    doc_embeddings = []
+    tokenized_arrays = []
+
+    for v in version:
+        qe, de, ta = load_cali_data(v)
+        query_embeddings.append(qe)
+        doc_embeddings.append(de)
+        tokenized_arrays.append(ta)
+    
+    query_embeddings = np.concatenate(query_embeddings, axis=0)
+    doc_embeddings = np.concatenate(doc_embeddings, axis=0)
+    tokenized_arrays = np.concatenate(tokenized_arrays, axis=0)
 
     stream = dx.stream_python_iterable(
         lambda: sample_generator(tokenized_arrays, query_embeddings, doc_embeddings)

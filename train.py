@@ -84,6 +84,7 @@ def main():
     parser.add_argument("--model", type=str, default="gemma-3-270m-mlx")
     parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--adapter", type=str, default=None)
+    parser.add_argument("--weights", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="mlx-eos-v5")
     parser.add_argument("--wandb-entity", type=str, default=None)
@@ -107,7 +108,7 @@ def main():
         "--save-steps", type=int, default=None, help="Save every N steps"
     )
     parser.add_argument(
-        "--data-version", type=str, default="v6", help="Calibration data version"
+        "--data-version", nargs="*", default=["v6", "v7", "v8"], help="Calibration data version"
     )
     parser.add_argument(
         "--epochs", type=int, default=10, help="Number of training epochs"
@@ -146,45 +147,48 @@ def main():
             lora_keys = set(keys)
 
     model, tokenizer = load(args.model)
+    # remove lm_head if it exists
+    if "lm_head" in model.parameters():
+        del model.lm_head
 
-    if not args.no_lora or args.adapter:
-        if not args.no_lora:
-            model.freeze()
-            # if adapter is provided and no_lora is true, that means we need to fuse 
-            # the adapter into the model and the model should be trainable overall
-        
-        model = apply_lora_to_model(
-            model,
-            lora_layers=lora_layers,
-            rank=lora_rank,
-            scale=lora_alpha,
-            dropout=lora_dropout,
-            lora_keys=lora_keys,
-        )
+    if args.weights:
+        model.load_weights(args.weights)
+    else:
+        if not args.no_lora or args.adapter:
+            if not args.no_lora:
+                model.freeze()
+                # if adapter is provided and no_lora is true, that means we need to fuse 
+                # the adapter into the model and the model should be trainable overall
+            
+            model = apply_lora_to_model(
+                model,
+                lora_layers=lora_layers,
+                rank=lora_rank,
+                scale=lora_alpha,
+                dropout=lora_dropout,
+                lora_keys=lora_keys,
+            )
+        if args.adapter:
+            # load adapter weights and this will make the lora resume-trainable
+            model.load_weights(
+                os.path.join(args.adapter, "adapters.safetensors"), strict=False
+            )
+            if args.no_lora:
+                # fuse the adapter into the model
+                fused_linears = [
+                    (n, m.fuse())
+                    for n, m in model.named_modules()
+                    if hasattr(m, "fuse")
+                ]
 
-    if args.adapter:
-        # load adapter weights and this will make the lora resume-trainable
-        model.load_weights(
-            os.path.join(args.adapter, "adapters.safetensors"), strict=False
-        )
-        if args.no_lora:
-            # fuse the adapter into the model
-            fused_linears = [
-                (n, m.fuse())
-                for n, m in model.named_modules()
-                if hasattr(m, "fuse")
-            ]
-
-            if fused_linears:
-                model.update_modules(tree_unflatten(fused_linears))
+                if fused_linears:
+                    model.update_modules(tree_unflatten(fused_linears))
 
 
     model.set_dtype(mx.float32)
     # Ensure model is in training mode for dropout to be active
     model.train()
-    # remove lm_head if it exists
-    if "lm_head" in model.parameters():
-        del model.lm_head
+
 
     # Print all model layers float types
     print("Model layers float types:")
@@ -209,9 +213,10 @@ def main():
 
     # Calculate total tokens from space separated tokens in the file
 
-    with open(f"data/{args.data_version}_tokenize.txt", "r") as f:
-        content = f.readlines()
-        num_tokens = sum(len(line.split()) for line in content)
+    num_tokens = 0
+    for v in args.data_version:
+        with open(f"data/{v}_tokenize.txt", "r") as f:
+            num_tokens += sum(len(line.split()) for line in f.readlines())
 
     print(f"Dataset size: {num_tokens} tokens")
 
