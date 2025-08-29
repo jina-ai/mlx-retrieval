@@ -106,6 +106,4 @@ def encode_texts(
     else:
         raise ValueError(f"Invalid pooling method: {pooling}")
 
-    # convert to float16
-    embeddings = embeddings.astype(mx.float16)
     return np.array(embeddings, dtype=np.float16)

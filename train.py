@@ -12,7 +12,8 @@ import mlx.optimizers as optim
 from mlx.optimizers import cosine_decay, linear_schedule, join_schedules
 from mlx_lm import load
 from mlx_lm.tuner.lora import LoRALinear
-from mlx.utils import tree_flatten, tree_map
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
+from mlx_lm.tuner.utils import get_total_parameters
 
 try:
     import wandb
@@ -41,11 +42,7 @@ def apply_lora_to_model(
     )
     print(f"Total layers: {total_layers}")
     print(f"LoRA-applied layers: {num_target_layers}")
-
-    total_params = sum(v.size for _, v in tree_flatten(model.parameters())) / 10**6
-    print(f"Total parameters: {total_params:.3f}M")
-
-    model.freeze()
+    print(f"Total parameters: {get_total_parameters(model)}")
 
     converted = 0
     target_names = []
@@ -85,6 +82,7 @@ def main():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     parser.add_argument("--max-length", type=int, default=4096)
     parser.add_argument("--model", type=str, default="gemma-3-270m-mlx")
+    parser.add_argument("--no-lora", action="store_true")
     parser.add_argument("--adapter", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb-project", type=str, default="mlx-eos-v5")
@@ -109,7 +107,7 @@ def main():
         "--save-steps", type=int, default=None, help="Save every N steps"
     )
     parser.add_argument(
-        "--cali-version", type=str, default="v7", help="Cali dataset version"
+        "--data-version", type=str, default="v6", help="Calibration data version"
     )
     parser.add_argument(
         "--epochs", type=int, default=10, help="Number of training epochs"
@@ -121,8 +119,8 @@ def main():
     warmup_ratio = 0.1  # Optimal: 10% warmup (standard practice)
 
     # Optimal LoRA parameters based on SOTA models (NV-Embed, E5-Mistral, etc.)
-    lora_rank = 6  # Optimal: 16 (used by top models)
-    lora_alpha = 8.0  # Optimal: 2x rank for best performance
+    lora_rank = 16  # Optimal: 16 (used by top models)
+    lora_alpha = 32.0  # Optimal: 2x rank for best performance
     lora_dropout = 0.2  # Optimal: 0.0 (per Unsloth research - not useful for LoRA)
     lora_layers = -1
     lora_keys = {
@@ -148,20 +146,38 @@ def main():
             lora_keys = set(keys)
 
     model, tokenizer = load(args.model)
-    model = apply_lora_to_model(
-        model,
-        lora_layers=lora_layers,
-        rank=lora_rank,
-        scale=lora_alpha,
-        dropout=lora_dropout,
-        lora_keys=lora_keys,
-    )
+
+    if not args.no_lora or args.adapter:
+        if not args.no_lora:
+            model.freeze()
+            # if adapter is provided and no_lora is true, that means we need to fuse 
+            # the adapter into the model and the model should be trainable overall
+        
+        model = apply_lora_to_model(
+            model,
+            lora_layers=lora_layers,
+            rank=lora_rank,
+            scale=lora_alpha,
+            dropout=lora_dropout,
+            lora_keys=lora_keys,
+        )
 
     if args.adapter:
         # load adapter weights and this will make the lora resume-trainable
         model.load_weights(
             os.path.join(args.adapter, "adapters.safetensors"), strict=False
         )
+        if args.no_lora:
+            # fuse the adapter into the model
+            fused_linears = [
+                (n, m.fuse())
+                for n, m in model.named_modules()
+                if hasattr(m, "fuse")
+            ]
+
+            if fused_linears:
+                model.update_modules(tree_unflatten(fused_linears))
+
 
     model.set_dtype(mx.float32)
     # Ensure model is in training mode for dropout to be active
@@ -184,7 +200,6 @@ def main():
             print(f"  {name}: {param.dtype}")
         else:
             print(f"  {name}: {type(param)}")
-    print()
 
     # MLX-optimized learning rate and weight decay
     learning_rate = 2e-4  # Optimal: 2e-4 (per Unsloth research for LoRA)
@@ -194,7 +209,7 @@ def main():
 
     # Calculate total tokens from space separated tokens in the file
 
-    with open(f"data/{args.cali_version}_tokenize.txt", "r") as f:
+    with open(f"data/{args.data_version}_tokenize.txt", "r") as f:
         content = f.readlines()
         num_tokens = sum(len(line.split()) for line in content)
 
@@ -215,10 +230,8 @@ def main():
 
     optimizer = optim.AdamW(learning_rate=lr_schedule, weight_decay=weight_decay)
 
-    print(f"Trainable parameters: {trainable_params}")
-    if trainable_params > 0.0:
-        print(f"LoRA applied ({trainable_params/total_params*100:.2f}% trainable)")
-    else:
+    print(f"Trainable parameters: {trainable_params}/{total_params} = {trainable_params/total_params*100:.2f}%")
+    if trainable_params == 0:
         raise ValueError(
             "Warning: no trainable parameters detected after LoRA injection"
         )
@@ -227,15 +240,16 @@ def main():
     print(
         f"Using learning rate scheduler: cosine decay with {warmup_steps} warmup steps"
     )
-    print(
-        f"MLX-optimized LoRA: rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout} (Unsloth-optimized)"
-    )
+    if not args.no_lora:
+        print(
+            f"MLX-optimized LoRA: rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout} (Unsloth-optimized)"
+        )
     print(f"Learning rate: {learning_rate} (Unsloth-optimized for LoRA)")
     print(f"Weight decay: {weight_decay} (Unsloth-optimized for regularization)")
-    print(f"Cali dataset version: {args.cali_version}, epochs: {args.epochs}")
+    print(f"Dataset version: {args.data_version}, epochs: {args.epochs}")
 
     # Create MLX Data stream that outputs training-ready batches directly
-    es_stream = get_cali_stream(version=args.cali_version, batch_size=args.batch_size)
+    es_stream = get_cali_stream(version=args.data_version, batch_size=args.batch_size)
 
     # Log embedding dimensions
     sample_batch = next(es_stream)
@@ -394,7 +408,7 @@ def main():
                         "max_length": args.max_length,
                         "learning_rate": learning_rate,
                         "weight_decay": weight_decay,
-                        "cali_version": args.cali_version,
+                        "data_version": args.data_version,
                         "lora_rank": lora_rank,
                         "lora_alpha": lora_alpha,
                         "lora_dropout": lora_dropout,
@@ -422,7 +436,7 @@ def main():
 
         # Reset data stream for each epoch
         es_stream = get_cali_stream(
-            version=args.cali_version, batch_size=args.batch_size
+            version=args.data_version, batch_size=args.batch_size
         )
 
         for training_batch in es_stream:
