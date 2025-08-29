@@ -14,6 +14,7 @@ from mlx_lm import load
 import argparse
 from functools import partial
 import subprocess
+from tqdm import tqdm
 
 
 class MLXWrapper(Wrapper):
@@ -31,18 +32,25 @@ class MLXWrapper(Wrapper):
         *,
         task_name: str,
         prompt_type: PromptType | None = None,
+        batch_size: int = 64,
         **kwargs,
     ) -> np.ndarray:
-        print(f"Encoding {task_name} with prompt type {prompt_type.value}")
-        embeddings = encode_texts(
-            self.model,
-            self.tokenizer,
-            sentences,
-            prompt_type.value,
-            pooling="eos",
-            max_length=self.max_length,
-        )
-        return embeddings
+        embeddings = []
+        for i in tqdm(
+            range(0, len(sentences), batch_size),
+            desc=f"Encoding {task_name} with prompt type {prompt_type.value}",
+        ):
+            batch_sentences = sentences[i : i + batch_size]
+            batch_embeddings = encode_texts(
+                self.model,
+                self.tokenizer,
+                batch_sentences,
+                prompt_type.value,
+                pooling="eos",
+                max_length=self.max_length,
+            )
+            embeddings.append(np.array(batch_embeddings))
+        return np.concatenate(embeddings, axis=0)
 
 
 def create_mlx_wrapper_from_path(
@@ -164,7 +172,7 @@ def evaluate_mteb_tasks(
     # Run MTEB evaluation
     mteb_tasks = [mteb.get_task(task) for task in tasks]
     evaluation = mteb.MTEB(tasks=mteb_tasks)
-    results = evaluation.run(model, overwrite_results=True)
+    results = evaluation.run(model, overwrite_results=True, k_values=[1, 5, 10])
 
     # Extract NDCG@5 results from TaskResult objects
     ndcg_at_5_results = {}

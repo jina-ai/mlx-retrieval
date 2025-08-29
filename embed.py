@@ -3,7 +3,6 @@
 Get embeddings from a trained model.
 """
 
-import numpy as np
 import mlx.core as mx
 
 PAD_TOKEN_ID = 0
@@ -59,6 +58,7 @@ def encode_texts(
     if isinstance(texts, str):
         texts = [texts]
 
+    input_ids, attention_mask, eos_positions = None, None, None
     # First pass: tokenize all texts and find max length in this batch
     all_tokens = []
     for text in texts:
@@ -85,9 +85,11 @@ def encode_texts(
         if tokens[-1] not in SPECIAL_TOKEN_IDS:
             tokens[-1] = EOS_TOKEN_ID
         attention_masks.append([1 if t not in SPECIAL_TOKEN_IDS else 0 for t in tokens])
-        eos_positions.append(tokens.index(EOS_TOKEN_ID))
-        if eos_positions[-1] is None:
+        # get last EOS_TOKEN_ID position
+        last_eos_position = tokens.index(EOS_TOKEN_ID)
+        if last_eos_position is None:
             raise ValueError("EOS token not found in tokens")
+        eos_positions.append(last_eos_position)
 
     # Convert to batch tensors
     input_ids = mx.array(padded_tokens)
@@ -105,5 +107,4 @@ def encode_texts(
         )
     else:
         raise ValueError(f"Invalid pooling method: {pooling}")
-
     return embeddings

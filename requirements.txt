@@ -4,3 +4,4 @@ numpy
 mteb
 elasticsearch
 wandb
+tqdm
