@@ -77,5 +77,5 @@ def get_cali_stream(version="v6", batch_size=10000):
     stream = dx.stream_python_iterable(
         lambda: sample_generator(tokenized_arrays, query_embeddings, doc_embeddings)
     )
-    stream = stream.dynamic_batch(1000, "tokenized", max_data_size=batch_size, num_threads=4)
+    stream = stream.dynamic_batch(1000, "tokenized", max_data_size=batch_size, num_threads=4, shuffle=True)
     return stream
