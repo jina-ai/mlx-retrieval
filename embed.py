@@ -13,7 +13,7 @@ SPECIAL_TOKEN_IDS = set([PAD_TOKEN_ID, BOS_TOKEN_ID, EOS_TOKEN_ID])
 
 
 def _mean_pooling(hidden_states, attention_mask):
-    attention_mask = mx.expand_dims(attention_mask.astype(mx.float32), axis=-1)
+    attention_mask = mx.expand_dims(attention_mask, axis=-1)
     masked_embeddings = hidden_states * attention_mask
     sum_embeddings = mx.sum(masked_embeddings, axis=1)
     sum_mask = mx.sum(attention_mask, axis=1)
@@ -22,7 +22,11 @@ def _mean_pooling(hidden_states, attention_mask):
 
 
 def extract_embeddings(model, input_ids, attention_mask, normalize=True):
+    # remove lm_head from model
     base_model = getattr(model, "model", model)
+    # Set model to evaluation mode to disable dropout during inference
+    base_model.eval()
+
     hidden_states = base_model(input_ids)
     embeddings = _mean_pooling(hidden_states, attention_mask)
     if normalize:
@@ -30,7 +34,28 @@ def extract_embeddings(model, input_ids, attention_mask, normalize=True):
     return embeddings
 
 
-def encode_texts(model, tokenizer, texts, prompt_type, max_length=256, normalize=True):
+def extract_eos_embeddings(model, input_ids, eos_positions, normalize=True):
+    # remove lm_head from model
+    base_model = getattr(model, "model", model)
+    # Set model to evaluation mode to disable dropout during inference
+    base_model.eval()
+
+    hidden_states = base_model(input_ids)
+    embeddings = hidden_states[mx.arange(hidden_states.shape[0]), eos_positions]
+    if normalize:
+        embeddings = embeddings / mx.linalg.norm(embeddings, axis=1, keepdims=True)
+    return embeddings
+
+
+def encode_texts(
+    model,
+    tokenizer,
+    texts,
+    prompt_type,
+    pooling="mean",
+    max_length=256,
+    normalize=True,
+):
     if isinstance(texts, str):
         texts = [texts]
 
@@ -50,20 +75,35 @@ def encode_texts(model, tokenizer, texts, prompt_type, max_length=256, normalize
     # Second pass: pad all texts to the batch max length and create batch tensors
     padded_tokens = []
     attention_masks = []
+    eos_positions = []
 
     for tokens in all_tokens:
         if len(tokens) < batch_max_length:
             tokens += [PAD_TOKEN_ID] * (batch_max_length - len(tokens))
         padded_tokens.append(tokens)
+        # the last token must be either EOS or PAD, if not change to EOS
+        if tokens[-1] not in SPECIAL_TOKEN_IDS:
+            tokens[-1] = EOS_TOKEN_ID
         attention_masks.append([1 if t not in SPECIAL_TOKEN_IDS else 0 for t in tokens])
+        eos_positions.append(tokens.index(EOS_TOKEN_ID))
+        if eos_positions[-1] is None:
+            raise ValueError("EOS token not found in tokens")
 
     # Convert to batch tensors
     input_ids = mx.array(padded_tokens)
     attention_mask = mx.array(attention_masks)
+    eos_positions = mx.array(eos_positions)
 
     # Extract embeddings for entire batch at once
-    embeddings = extract_embeddings(
-        model, input_ids, attention_mask, normalize=normalize
-    )
+    if pooling == "mean":
+        embeddings = extract_embeddings(
+            model, input_ids, attention_mask, normalize=normalize
+        )
+    elif pooling == "eos":
+        embeddings = extract_eos_embeddings(
+            model, input_ids, eos_positions, normalize=normalize
+        )
+    else:
+        raise ValueError(f"Invalid pooling method: {pooling}")
 
-    return np.array(embeddings)
+    return embeddings

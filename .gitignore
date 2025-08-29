@@ -253,6 +253,4 @@ timeout_test.txt
 pytorch_test.txt
 
 # Test files
-test_es_iterator.py
-test_tokenizer.py
-test_data_loader.py
+test_*.py

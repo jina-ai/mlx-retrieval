@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import math
 import os
-import random
 import time
 from typing import Dict, Generator, Iterable, List, Optional
 import mlx.data as dx
