@@ -33,7 +33,6 @@ def apply_lora_to_model(
     dropout: float,
     lora_keys: set[str],
 ):
-    print("Applying LoRA adapters (MLX style)")
     total_layers = len(model.layers)
     num_target_layers = (
         total_layers
@@ -609,23 +608,8 @@ def main():
         str(os.path.join(final_output_dir, "adapters.safetensors")), adapter_weights
     )
 
-    adapter_config = {
-        "fine_tune_type": "lora",
-        "num_layers": (
-            len(model.layers)
-            if (lora_layers is None or lora_layers < 0)
-            else lora_layers
-        ),
-        "lora_parameters": {
-            "rank": lora_rank,
-            "alpha": lora_alpha,
-            "dropout": lora_dropout,
-            "keys": sorted(list(lora_keys)),
-        },
-    }
-
     with open(os.path.join(final_output_dir, "adapter_config.json"), "w") as f:
-        json.dump(adapter_config, f, indent=2)
+        json.dump(create_adapter_config(step=total_steps), f, indent=2)
 
     if wb_run is not None:
         wb_run.finish()
