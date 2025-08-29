@@ -13,7 +13,7 @@ SPECIAL_TOKEN_IDS = set([PAD_TOKEN_ID, BOS_TOKEN_ID, EOS_TOKEN_ID])
 
 
 def _mean_pooling(hidden_states, attention_mask):
-    attention_mask = mx.expand_dims(attention_mask.astype(mx.float16), axis=-1)
+    attention_mask = mx.expand_dims(attention_mask, axis=-1)
     masked_embeddings = hidden_states * attention_mask
     sum_embeddings = mx.sum(masked_embeddings, axis=1)
     sum_mask = mx.sum(attention_mask, axis=1)
@@ -106,4 +106,4 @@ def encode_texts(
     else:
         raise ValueError(f"Invalid pooling method: {pooling}")
 
-    return np.array(embeddings, dtype=np.float16)
+    return embeddings
