@@ -429,16 +429,10 @@ def main():
                 eval_metrics = evaluate_mteb_tasks(
                     adapter_path=step,
                     max_length=args.max_length,
-                    verbose=False,
+                    verbose=True,
                     model=model,  # Pass already-loaded model
                     tokenizer=tokenizer,  # Pass already-loaded model
                     tasks=args.eval_tasks,
-                )
-
-                print(f"Step {step} MTEB Results:")
-                print(f"Average NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f}")
-                print(
-                    f"Tasks evaluated: {eval_metrics['valid_tasks']}/{eval_metrics['total_tasks']}"
                 )
 
                 # Log evaluation results to wandb if available

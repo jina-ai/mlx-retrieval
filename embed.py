@@ -63,9 +63,9 @@ def encode_texts(
     all_tokens = []
     for text in texts:
         if prompt_type == "query":
-            text = f"<unused0>{text}<eos>"
+            text = f"{text}<unused0><eos>"
         elif prompt_type == "document":
-            text = f"<unused1>{text}<eos>"
+            text = f"{text}<unused1><eos>"
         tokens = tokenizer.encode(text)[:max_length]
         all_tokens.append(tokens)
 
@@ -82,11 +82,9 @@ def encode_texts(
             tokens += [PAD_TOKEN_ID] * (batch_max_length - len(tokens))
         padded_tokens.append(tokens)
         # the last token must be either EOS or PAD, if not change to EOS
-        if tokens[-1] not in SPECIAL_TOKEN_IDS:
-            tokens[-1] = EOS_TOKEN_ID
         attention_masks.append([1 if t not in SPECIAL_TOKEN_IDS else 0 for t in tokens])
-        # get last EOS_TOKEN_ID position
-        last_eos_position = tokens.index(EOS_TOKEN_ID)
+        # get last <unused0> or <unused1> position
+        last_eos_position = len(tokens) - 1 - tokens[::-1].index(EOS_TOKEN_ID)
         if last_eos_position is None:
             raise ValueError("EOS token not found in tokens")
         eos_positions.append(last_eos_position)

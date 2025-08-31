@@ -285,16 +285,8 @@ def main():
         sample: {sample_batch_mlx['embedding'][0]}"
     )
 
-    if target_dim > pred_dim:
-        print(
-            f"Target embeddings will be truncated from {target_dim} to {pred_dim} dimensions"
-        )
-    elif target_dim < pred_dim:
-        print(
-            f"Target embeddings will be padded from {target_dim} to {pred_dim} dimensions"
-        )
-    else:
-        print("Embedding dimensions match perfectly")
+    if target_dim != pred_dim:
+        raise ValueError(f"Embedding dimensions mismatch {target_dim} != {pred_dim}")
 
     def compute_loss(batch):
         predicted = extract_eos_embeddings(model, batch["input_ids"], batch["eos_pos"])
@@ -305,7 +297,9 @@ def main():
         )
         cosine_loss = 1 - similarity
 
-        return cosine_loss
+        l1_loss = nn.losses.l1_loss(predicted, target, reduction="mean")
+
+        return cosine_loss + 10 * l1_loss
 
     # Define the state that will be captured by compile
     state = [model.state, optimizer.state, mx.random.state]
@@ -397,11 +391,7 @@ def main():
                     tasks=args.eval_tasks,
                 )
 
-                print(f"Initial MTEB Results:")
-                print(f"Average NDCG@5: {start_metrics['avg_ndcg_at_5']:.4f}")
-                print(
-                    f"Tasks evaluated: {start_metrics['valid_tasks']}/{start_metrics['total_tasks']}"
-                )
+                model.train()
 
             if wb_run is None and args.wandb and wandb is not None:
                 run_name = (
@@ -503,7 +493,7 @@ def main():
                 eval_metrics = evaluate_mteb_tasks(
                     adapter_path=step,
                     max_length=args.max_length,
-                    verbose=False,
+                    verbose=True,
                     model=model,  # Pass already-loaded model
                     tokenizer=tokenizer,  # Pass already-loaded model
                     tasks=args.eval_tasks,
@@ -511,11 +501,6 @@ def main():
 
                 # Restore training mode after evaluation
                 model.train()
-
-                print(f"Average NDCG@5: {eval_metrics['avg_ndcg_at_5']:.4f}")
-                print(
-                    f"Tasks evaluated: {eval_metrics['valid_tasks']}/{eval_metrics['total_tasks']}"
-                )
 
                 # Log evaluation results to wandb if available
                 if wb_run is not None:
