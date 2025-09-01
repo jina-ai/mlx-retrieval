@@ -63,9 +63,9 @@ def encode_texts(
     all_tokens = []
     for text in texts:
         if prompt_type == "query":
-            text = f"{text}<unused0><eos>"
+            text = f"<unused0>{text}<eos>"
         elif prompt_type == "document":
-            text = f"{text}<unused1><eos>"
+            text = f"<unused1>{text}<eos>"
         tokens = tokenizer.encode(text)[:max_length]
         all_tokens.append(tokens)
 

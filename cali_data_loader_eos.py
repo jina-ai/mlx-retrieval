@@ -34,13 +34,13 @@ def load_cali_data(version="v6"):
     for line in raw_lines:
         tokens = [int(x) for x in line.split()]
         # Pre-insert role tokens and EOS for both query/doc variants
-        query_tokens = tokens + [6, 1]  # [...content, role, eos]
-        doc_tokens = tokens + [7, 1]  # [bos, ...content, role, eos]
+        query_tokens = [tokens[0], 6] + tokens[1:] + [1]  # [...content, role, eos]
+        doc_tokens = [tokens[0], 7] + tokens[1:] + [1]  # [bos, ...content, role, eos]
         tokenized_arrays.append(
             {
                 "query": np.array(query_tokens, dtype=np.int32),
                 "doc": np.array(doc_tokens, dtype=np.int32),
-                "eos_pos": len(tokens) + 1,  # bos, content, role, eos
+                "eos_pos": len(query_tokens) - 1,  # bos, role, content, eos
             }
         )
 
