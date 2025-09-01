@@ -18,7 +18,7 @@ random.shuffle(all_lines)
 
 
 
-def sample_with_embedding(qwen_model, tokenizer, batch_size=16):
+def sample_with_embedding(qwen_model, tokenizer, batch_size=64):
     batch_samples = []
     batch_texts = []
     
@@ -104,5 +104,5 @@ def sample_generator(tokenizer):
 
 def get_cali_stream(qwen_model, tokenizer, batch_size=64):
     stream = dx.stream_python_iterable(lambda: sample_with_embedding(qwen_model, tokenizer))
-    stream = stream.batch(batch_size)
+    stream = stream.batch(batch_size).prefetch(8, 4)
     return stream
