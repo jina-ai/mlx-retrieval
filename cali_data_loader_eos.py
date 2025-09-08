@@ -3,6 +3,7 @@
 import mlx.data as dx
 import numpy as np
 import random
+from embed import EOS_TOKEN_ID
 
 
 # Global cache for loaded data
@@ -36,11 +37,14 @@ def load_cali_data(version="v6"):
         # Pre-insert role tokens and EOS for both query/doc variants
         query_tokens = [tokens[0], 6] + tokens[1:] + [1]  # [...content, role, eos]
         doc_tokens = [tokens[0], 7] + tokens[1:] + [1]  # [bos, ...content, role, eos]
+        last_eos_position = (
+            len(query_tokens) - 1 - query_tokens[::-1].index(EOS_TOKEN_ID)
+        )
         tokenized_arrays.append(
             {
                 "query": np.array(query_tokens, dtype=np.int32),
                 "doc": np.array(doc_tokens, dtype=np.int32),
-                "eos_pos": len(query_tokens) - 1,  # bos, role, content, eos
+                "eos_pos": last_eos_position,
             }
         )
 
@@ -83,7 +87,7 @@ def get_cali_stream(version="v6", batch_size=10000):
         query_embeddings.append(qe)
         doc_embeddings.append(de)
         tokenized_arrays.append(ta)
-    
+
     query_embeddings = np.concatenate(query_embeddings, axis=0)
     doc_embeddings = np.concatenate(doc_embeddings, axis=0)
     tokenized_arrays = np.concatenate(tokenized_arrays, axis=0)
@@ -91,5 +95,7 @@ def get_cali_stream(version="v6", batch_size=10000):
     stream = dx.stream_python_iterable(
         lambda: sample_generator(tokenized_arrays, query_embeddings, doc_embeddings)
     )
-    stream = stream.dynamic_batch(1000, "tokenized", max_data_size=batch_size, num_threads=4, shuffle=True)
+    stream = stream.dynamic_batch(
+        1000, "tokenized", max_data_size=batch_size, num_threads=4, shuffle=True
+    )
     return stream

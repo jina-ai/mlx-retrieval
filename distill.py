@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--adapter", type=str, default=None)
     parser.add_argument("--weights", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="mlx-eos-v6")
+    parser.add_argument("--wandb-project", type=str, default="mlx-eos-v7")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--tags", nargs="*", default=[])
