@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--adapter", type=str, default=None)
     parser.add_argument("--weights", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--wandb-project", type=str, default="mlx-eos-v7")
+    parser.add_argument("--wandb-project", type=str, default="mlx-eos-v8")
     parser.add_argument("--wandb-entity", type=str, default=None)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--tags", nargs="*", default=[])
@@ -389,6 +389,7 @@ def main():
 
     step = 0
     accum_loss = 0.0
+    batch_tokens = 0
 
     for epoch in range(args.epochs):
         if epoch == 0:
@@ -453,13 +454,10 @@ def main():
             version=args.data_version, batch_size=args.batch_size
         )
 
+        t0 = time.perf_counter()
+
         for training_batch in es_stream:
             step += 1
-
-            tokens = training_batch["eos_pos"].sum().item()
-            batch_tokens = tokens
-
-            t0 = time.perf_counter()
 
             # Convert batch to MLX arrays
             mlx_batch = {
@@ -477,18 +475,18 @@ def main():
             # Convert MLX array to Python scalar for logging
             avg_loss_scalar = avg_loss.item()
             accum_loss += avg_loss_scalar
-
-            dt = time.perf_counter() - t0
-            token_per_sec = batch_tokens / dt if dt > 0 else 0.0
+            batch_tokens += training_batch["eos_pos"].sum().item()
 
             # Get current learning rate from scheduler
             current_lr = lr_schedule(step)
 
             print(
-                f"Epoch {epoch + 1}/{args.epochs}, Step {step}/{total_steps}, Loss: {avg_loss_scalar:.4f}, LR: {float(current_lr):.2e}, tokens/sec: {token_per_sec:.0f}"
+                f"Epoch {epoch + 1}/{args.epochs}, Step {step}/{total_steps}, Loss: {avg_loss_scalar:.4f}, LR: {float(current_lr):.2e}"
             )
 
             if step % 10 == 0 and wb_run is not None:
+                dt = time.perf_counter() - t0
+                token_per_sec = batch_tokens / dt if dt > 0 else 0.0
                 wandb.log(
                     {
                         "train/loss": accum_loss / 10,
@@ -499,6 +497,8 @@ def main():
                     step=step,
                 )
                 accum_loss = 0.0
+                batch_tokens = 0
+                t0 = time.perf_counter()
 
             if step % args.eval_steps == 0 and args.eval_tasks:
                 print(f"\nRunning MTEB evaluation at step {step}...")
