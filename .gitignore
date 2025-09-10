@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .cursor/
+gemma-3-270m-it-mlx/
 
 train.out
 nohup.out

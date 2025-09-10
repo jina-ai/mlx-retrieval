@@ -4,6 +4,9 @@ Get embeddings from a trained model.
 """
 
 import mlx.core as mx
+from bidirectional_gemma3 import patch_gemma3_for_bidirectional
+
+patch_gemma3_for_bidirectional()
 
 PAD_TOKEN_ID = 0
 EOS_TOKEN_ID = 1
@@ -33,13 +36,17 @@ def extract_embeddings(model, input_ids, attention_mask, normalize=True):
     return embeddings
 
 
-def extract_eos_embeddings(model, input_ids, eos_positions, normalize=True):
+def extract_eos_embeddings(
+    model, input_ids, eos_positions, normalize=True, bidirectional=False
+):
     # remove lm_head from model
     base_model = getattr(model, "model", model)
     # Set model to evaluation mode to disable dropout during inference
     base_model.eval()
 
-    hidden_states = base_model(input_ids)
+    # Use bidirectional attention if requested
+    hidden_states = base_model(input_ids, bidirectional=bidirectional)
+
     embeddings = hidden_states[mx.arange(hidden_states.shape[0]), eos_positions]
     if normalize:
         embeddings = embeddings / mx.linalg.norm(embeddings, axis=1, keepdims=True)

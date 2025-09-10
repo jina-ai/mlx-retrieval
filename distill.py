@@ -115,6 +115,11 @@ def main():
     parser.add_argument(
         "--epochs", type=int, default=10, help="Number of training epochs"
     )
+    parser.add_argument(
+        "--bidir",
+        action="store_true",
+        help="Use bidirectional attention instead of causal",
+    )
 
     args = parser.parse_args()
 
@@ -254,6 +259,7 @@ def main():
     print(f"Learning rate: {learning_rate} (Unsloth-optimized for LoRA)")
     print(f"Weight decay: {weight_decay} (Unsloth-optimized for regularization)")
     print(f"Dataset version: {args.data_version}, epochs: {args.epochs}")
+    print(f"Attention mode: {'bidirectional' if args.bidir else 'causal'}")
 
     # Create MLX Data stream that outputs training-ready batches directly
     es_stream = get_cali_stream(version=args.data_version, batch_size=args.batch_size)
@@ -270,6 +276,7 @@ def main():
         model,
         sample_batch_mlx["input_ids"],
         sample_batch_mlx["eos_pos"],
+        bidirectional=args.bidir,
     )
 
     target_dim = sample_batch_mlx["embedding"].shape[1]
@@ -289,7 +296,12 @@ def main():
         raise ValueError(f"Embedding dimensions mismatch {target_dim} != {pred_dim}")
 
     def compute_loss(batch):
-        predicted = extract_eos_embeddings(model, batch["input_ids"], batch["eos_pos"])
+        predicted = extract_eos_embeddings(
+            model,
+            batch["input_ids"],
+            batch["eos_pos"],
+            bidirectional=args.bidir,
+        )
         target = batch["embedding"]
 
         similarity = nn.losses.cosine_similarity_loss(
