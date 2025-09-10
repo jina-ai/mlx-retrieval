@@ -37,13 +37,7 @@ def patch_gemma3_for_bidirectional():
         if cache is None:
             cache = [None] * len(self.layers)
 
-        # For bidirectional attention, don't create any masks at all
-        if bidirectional:
-            # Pass None for all masks - this allows full attention
-            full_mask = None
-            sliding_window_mask = None
-        elif mask is None:
-            # Use original causal mask logic
+        if mask is None:
             j = self.args.sliding_window_pattern
             full_mask = create_attention_mask(h, cache[j - 1 : j])
             sliding_window_mask = create_attention_mask(h, cache)
@@ -60,7 +54,10 @@ def patch_gemma3_for_bidirectional():
             elif mask is None:
                 local_mask = sliding_window_mask
 
-            h = layer(h, local_mask, c)
+            if bidirectional:
+                h = layer(h, None, c)
+            else:
+                h = layer(h, local_mask, c)
 
         return self.norm(h)
 
