@@ -12,6 +12,16 @@ PAD_TOKEN_ID = 0
 EOS_TOKEN_ID = 1
 BOS_TOKEN_ID = 2
 SPECIAL_TOKEN_IDS = set([PAD_TOKEN_ID, BOS_TOKEN_ID, EOS_TOKEN_ID])
+# single query and document prompt
+QUERY_PROMPT = "<unused0>"
+DOC_PROMPT = "<unused1>"
+
+# # qwen settings
+# QUERY_PROMPT = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"
+# DOC_PROMPT = ""
+
+print(f"QUERY_PROMPT: {QUERY_PROMPT}")
+print(f"DOC_PROMPT: {DOC_PROMPT}")
 
 
 def _mean_pooling(hidden_states, attention_mask):
@@ -70,9 +80,9 @@ def encode_texts(
     all_tokens = []
     for text in texts:
         if prompt_type == "query":
-            text = f"<unused0>{text}<eos>"
+            text = f"{QUERY_PROMPT}{text}<eos>"
         elif prompt_type == "document":
-            text = f"<unused1>{text}<eos>"
+            text = f"{DOC_PROMPT}{text}<eos>"
         tokens = tokenizer.encode(text)[:max_length]
         all_tokens.append(tokens)
 
@@ -88,10 +98,12 @@ def encode_texts(
         if len(tokens) < batch_max_length:
             tokens += [PAD_TOKEN_ID] * (batch_max_length - len(tokens))
         padded_tokens.append(tokens)
-        # the last token must be either EOS or PAD, if not change to EOS
-        attention_masks.append([1 if t not in SPECIAL_TOKEN_IDS else 0 for t in tokens])
         # get last <unused0> or <unused1> position
         last_eos_position = len(tokens) - 1 - tokens[::-1].index(EOS_TOKEN_ID)
+        # everything after last_eos_position should be masked
+        attention_masks.append(
+            [0 if i > last_eos_position else 1 for i in range(len(tokens))]
+        )
         if last_eos_position is None:
             raise ValueError("EOS token not found in tokens")
         eos_positions.append(last_eos_position)

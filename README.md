@@ -13,6 +13,7 @@ On M3 Ultra 512GB (80 GPU cores), training speed of `gemma-3-270m` is around 400
 ## File Structure
 
 - `train.py` - The LoRA training script
+- `distill.py` - The post-training distillation script
 - `eval.py` - MTEB evaluation used during training; can also be used standalone
 - `embed.py` - Helper functions for generating embeddings
 - `loss.py` - Loss functions

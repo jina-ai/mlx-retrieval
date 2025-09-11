@@ -8,6 +8,36 @@ from embed import EOS_TOKEN_ID
 
 # Global cache for loaded data
 _CACHE = {}
+# single special token setup
+QUERY_PREFIX = [2, 6]
+DOC_PREFIX = [2, 7]
+
+# # qwen3 settings
+# QUERY_PREFIX = [
+#     2,
+#     218875,
+#     236787,
+#     17770,
+#     496,
+#     4108,
+#     3927,
+#     7609,
+#     236764,
+#     33205,
+#     7798,
+#     42437,
+#     600,
+#     3890,
+#     506,
+#     7609,
+#     107,
+#     7990,
+#     236787,
+# ]
+# DOC_PREFIX = [2]
+
+print(f"QUERY_PREFIX: {QUERY_PREFIX}")
+print(f"DOC_PREFIX: {DOC_PREFIX}")
 
 
 def load_cali_data(version="v6"):
@@ -35,16 +65,22 @@ def load_cali_data(version="v6"):
     for line in raw_lines:
         tokens = [int(x) for x in line.split()]
         # Pre-insert role tokens and EOS for both query/doc variants
-        query_tokens = [tokens[0], 6] + tokens[1:] + [1]  # [...content, role, eos]
-        doc_tokens = [tokens[0], 7] + tokens[1:] + [1]  # [bos, ...content, role, eos]
-        last_eos_position = (
+        query_tokens = (
+            QUERY_PREFIX + tokens[1:] + [1]
+        )  # [prefix, ...content, role, eos]
+        doc_tokens = DOC_PREFIX + tokens[1:] + [1]  # [prefix, ...content, role, eos]
+        query_last_eos_position = (
             len(query_tokens) - 1 - query_tokens[::-1].index(EOS_TOKEN_ID)
+        )
+        doc_last_eos_position = (
+            len(doc_tokens) - 1 - doc_tokens[::-1].index(EOS_TOKEN_ID)
         )
         tokenized_arrays.append(
             {
                 "query": np.array(query_tokens, dtype=np.int32),
                 "doc": np.array(doc_tokens, dtype=np.int32),
-                "eos_pos": last_eos_position,
+                "eos_pos_query": query_last_eos_position,
+                "eos_pos_doc": doc_last_eos_position,
             }
         )
 
@@ -61,15 +97,16 @@ def sample_generator(tokenized_arrays, query_embeddings, doc_embeddings):
         is_query = is_queries[idx]
         sample = {
             "idx": np.array(idx, dtype=np.int32),
-            "eos_pos": tokenized_arrays[idx]["eos_pos"],
         }
 
         if is_query:
             sample["tokenized"] = tokenized_arrays[idx]["query"]
             sample["embedding"] = query_embeddings[idx].astype(np.float32)
+            sample["eos_pos"] = tokenized_arrays[idx]["eos_pos_query"]
         else:
             sample["tokenized"] = tokenized_arrays[idx]["doc"]
             sample["embedding"] = doc_embeddings[idx].astype(np.float32)
+            sample["eos_pos"] = tokenized_arrays[idx]["eos_pos_doc"]
         yield sample
 
 
