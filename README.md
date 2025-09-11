@@ -78,6 +78,10 @@ This adds full LoRA to the model and fine-tunes it with an effective batch size 
 
 The screenshot shows varying training tokens/sec because data is streamed from a remote Elasticsearch index. Network latency affects training speed. Using local JSONL data should provide stable training speed of 4000-5000 tokens/sec on M3 Ultra 512GB.
 
+## Distillation
+
+See [distill-readme.md](distill-readme.md) for more details.
+
 ## Technical Details
 
 - This project is primarily for educational purposes and implements common practices for training effective embedding and reranker models. While currently tested on the `gemma-3-270m` model, it should work with other models as well.
