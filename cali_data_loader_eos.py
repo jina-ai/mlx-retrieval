@@ -83,6 +83,15 @@ def load_cali_data(version="v6"):
                 "eos_pos_doc": doc_last_eos_position,
             }
         )
+    # check if len(tokenized_arrays) is same as len(query_embeddings) and len(doc_embeddings)
+    if (
+        len(tokenized_arrays) != query_embeddings.shape[0]
+        or len(tokenized_arrays) != doc_embeddings.shape[0]
+    ):
+        raise ValueError(
+            f"Length mismatch: {len(tokenized_arrays)} != {query_embeddings.shape[0]} != {doc_embeddings.shape[0]}"
+        )
+    print(f"Number of samples: {len(tokenized_arrays)}")
 
     _CACHE[version] = (query_embeddings, doc_embeddings, tokenized_arrays)
     return _CACHE[version]

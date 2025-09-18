@@ -390,6 +390,7 @@ def main():
     step = 0
     accum_loss = 0.0
     batch_tokens = 0
+    total_tokens = 0
 
     for epoch in range(args.epochs):
         if epoch == 0:
@@ -476,6 +477,7 @@ def main():
             avg_loss_scalar = avg_loss.item()
             accum_loss += avg_loss_scalar
             batch_tokens += training_batch["eos_pos"].sum().item()
+            total_tokens += training_batch["eos_pos"].sum().item()
 
             # Get current learning rate from scheduler
             current_lr = lr_schedule(step)
@@ -491,8 +493,8 @@ def main():
                     {
                         "train/loss": accum_loss / 10,
                         "train/learning_rate": float(current_lr),
+                        "train/tokens": total_tokens,
                         "train/tokens_per_sec": token_per_sec,
-                        "train/batch_tokens": batch_tokens,
                     },
                     step=step,
                 )

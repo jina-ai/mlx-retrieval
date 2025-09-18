@@ -255,3 +255,5 @@ pytorch_test.txt
 
 # Test files
 test_*.py
+encode.out
+download_wikitext_v9.py
